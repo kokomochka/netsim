@@ -9,7 +9,8 @@ const cache = new Map<string, GraphicsContext>();
 
 function card(ctx: GraphicsContext, color: number): void {
   const h = BODY / 2;
-  ctx.roundRect(-h, -h, BODY, BODY, 6).fill({ color: COLORS.card }).stroke({ width: 1.5, color, alpha: 0.55 });
+  ctx.roundRect(-h + 1, -h + 2.5, BODY - 2, BODY - 1, 8).fill({ color: 0x2a3547, alpha: 0.07 });
+  ctx.roundRect(-h, -h, BODY, BODY, 8).fill({ color: COLORS.card }).stroke({ width: 1.5, color, alpha: 0.7 });
 }
 
 function arrowHead(ctx: GraphicsContext, x: number, y: number, dx: number, dy: number, size: number, color: number): void {

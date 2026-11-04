@@ -19,7 +19,7 @@ interface DeviceView {
   sub: Text;
 }
 
-const LABEL_FONT = '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
+const LABEL_FONT = '"Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", sans-serif';
 
 function subLabel(d: Device, usedPorts: Map<string, string>): string {
   switch (d.kind) {
@@ -170,12 +170,12 @@ export class Renderer {
     if (cs >= 9) {
       for (let k = kx0; k <= kx1; k++) if (k % 5 !== 0) line(k, true);
       for (let k = ky0; k <= ky1; k++) if (k % 5 !== 0) line(k, false);
-      g.stroke({ width: 1, color: COLORS.gridMinor, alpha: 0.055 });
+      g.stroke({ width: 1, color: COLORS.gridMinor, alpha: 0.05 });
     }
     if (cs * 5 >= 9) {
       for (let k = Math.ceil(kx0 / 5) * 5; k <= kx1; k += 5) line(k, true);
       for (let k = Math.ceil(ky0 / 5) * 5; k <= ky1; k += 5) line(k, false);
-      g.stroke({ width: 1, color: COLORS.gridMajor, alpha: 0.13 });
+      g.stroke({ width: 1, color: COLORS.gridMajor, alpha: 0.1 });
     }
   }
 
@@ -224,7 +224,7 @@ export class Renderer {
       g.rect(px0, py0, pw, ph).fill({ color: COLORS.asphalt });
       g.rect(px0 + 2, py0 + 2, pw - 4, ph - 4).stroke({ width: 2, color: COLORS.stall, alpha: 0.5 });
       const rows = [pk.y0 + 0.15, pk.y1 - 1.35].filter((r, i, a) => a.indexOf(r) === i && r >= pk.y0);
-      const carColors = [0xc0392b, 0x2e86de, 0xecf0f1, 0x27ae60, 0xf1c40f, 0x7f8c8d, 0x8e44ad];
+      const carColors = [0xfa896b, 0x5d87ff, 0xffffff, 0x49beff, 0xffae1f, 0xa6b4c8, 0x9b8cf5];
       for (const row of rows) {
         const top = row * CELL;
         for (let x = pk.x0; x <= pk.x1; x++) {
@@ -233,10 +233,10 @@ export class Renderer {
           const h = hash(x, Math.round(row * 10));
           if (h % 100 < 55) {
             const c = carColors[h % carColors.length]!;
-            g.roundRect(sx + 9, top + 6, CELL - 18, CELL * 1.2 - 12, 7).fill({ color: 0x000000, alpha: 0.35 });
+            g.roundRect(sx + 9, top + 6, CELL - 18, CELL * 1.2 - 12, 7).fill({ color: 0x2a3547, alpha: 0.12 });
             g.roundRect(sx + 7, top + 4, CELL - 18, CELL * 1.2 - 12, 7).fill({ color: c });
-            g.roundRect(sx + 11, top + 14, CELL - 26, 12, 3).fill({ color: 0x1b2530, alpha: 0.85 });
-            g.roundRect(sx + 11, top + CELL * 1.2 - 26, CELL - 26, 8, 3).fill({ color: 0x1b2530, alpha: 0.7 });
+            g.roundRect(sx + 11, top + 14, CELL - 26, 12, 3).fill({ color: 0x3b4a63, alpha: 0.55 });
+            g.roundRect(sx + 11, top + CELL * 1.2 - 26, CELL - 26, 8, 3).fill({ color: 0x3b4a63, alpha: 0.45 });
           }
         }
         g.moveTo((pk.x1 + 1) * CELL - 1, top).lineTo((pk.x1 + 1) * CELL - 1, top + CELL * 1.2).stroke({ width: 2, color: COLORS.stall, alpha: 0.7 });
@@ -255,7 +255,7 @@ export class Renderer {
     };
     const W = f.w * CELL, H = f.h * CELL;
     fence(0, 0, W, 0); fence(W, 0, W, H); fence(W, H, 0, H); fence(0, H, 0, 0);
-    g.stroke({ width: 2, color: 0xb9b2a0, alpha: 0.55 });
+    g.stroke({ width: 2, color: 0x8f9bb0, alpha: 0.6 });
     const locked = smartDoorsLocked(s);
     this.lastDoorState = locked;
     const tiles = Object.entries(f.tiles).map(([k, t]) => { const [x, y] = k.split(',').map(Number); return { x: x!, y: y!, t }; });
@@ -289,7 +289,7 @@ export class Renderer {
       if (t !== 'vent') continue;
       const px = x * CELL, py = y * CELL;
       const horiz = isWallish(x - 1, y) || isWallish(x + 1, y);
-      g.roundRect(px + 8, py + 8, CELL - 16, CELL - 16, 4).fill({ color: 0x1d2a35 }).stroke({ width: 2, color: KIND_COLOR.ac });
+      g.roundRect(px + 8, py + 8, CELL - 16, CELL - 16, 4).fill({ color: 0xffffff }).stroke({ width: 2, color: KIND_COLOR.ac });
       for (let i = 0; i < 4; i++) {
         if (horiz) g.moveTo(px + 13 + i * 7, py + 12).lineTo(px + 13 + i * 7, py + CELL - 12);
         else g.moveTo(px + 12, py + 13 + i * 7).lineTo(px + CELL - 12, py + 13 + i * 7);
@@ -352,7 +352,7 @@ export class Renderer {
       const t = s.climate.rooms[r.key] ?? s.climate.outside;
       const hot = Math.max(0, Math.min(1, (t - 26) / 30));
       const cold = Math.max(0, Math.min(1, (20 - t) / 8));
-      const color = hot > 0 ? mix(0xffb347, 0xff3b30, Math.max(0, (t - 40) / 20)) : 0x5fb8ff;
+      const color = hot > 0 ? mix(0xffb347, 0xff3b30, Math.max(0, (t - 40) / 20)) : 0x1e88e5;
       const alpha = hot > 0 ? 0.08 + hot * 0.3 : cold * 0.15;
       let mx = Infinity, my = Infinity;
       if (alpha > 0.01) for (const c of r.cells) {
@@ -399,7 +399,7 @@ export class Renderer {
         .fill({ color: COLORS.sight, alpha: 0.045 }).stroke({ width: 1, color: COLORS.sight, alpha: 0.16 });
       const seated = e.state === 'seated';
       const oy = seated ? 15 : 0;
-      g.ellipse(x, y + oy + 2, 8, 5).fill({ color: 0x000000, alpha: 0.25 });
+      g.ellipse(x, y + oy + 2, 8, 5).fill({ color: 0x2a3547, alpha: 0.14 });
       g.circle(x, y + oy, 7).fill({ color: COLORS.engineer }).stroke({ width: 1.5, color: COLORS.engineerDark });
       g.circle(x, y + oy - 1, 3.4).fill({ color: 0xf1d3b3 });
       const job = e.jobId ? s.staff.jobs[e.jobId] : undefined;
@@ -424,7 +424,7 @@ export class Renderer {
     }
     for (const t of Object.values(s.staff.trespassers)) {
       const x = t.x * CELL, y = t.y * CELL;
-      g.ellipse(x, y + 2, 8, 5).fill({ color: 0x000000, alpha: 0.3 });
+      g.ellipse(x, y + 2, 8, 5).fill({ color: 0x2a3547, alpha: 0.18 });
       g.circle(x, y, 7).fill({ color: COLORS.stranger }).stroke({ width: 2, color: COLORS.strangerRim });
       g.circle(x, y - 1, 3).fill({ color: 0x55555e });
       if (t.state === 'hacking') {
@@ -455,7 +455,7 @@ export class Renderer {
         const icon = new Graphics(deviceContext(d.kind));
         const name = new Text({
           text: '', resolution: 3,
-          style: { fontFamily: LABEL_FONT, fontSize: 10, fill: COLORS.label, fontWeight: '500' },
+          style: { fontFamily: LABEL_FONT, fontSize: 10, fill: COLORS.label, fontWeight: '700' },
         });
         const sub = new Text({
           text: '', resolution: 3,
@@ -483,7 +483,7 @@ export class Renderer {
         v.sub.text = sl;
         const w = Math.max(v.name.width, v.sub.width) + 8;
         v.plate.clear();
-        v.plate.roundRect(-w / 2, BODY / 2 + 2, w, 28, 4).fill({ color: COLORS.background, alpha: 0.85 });
+        v.plate.roundRect(-w / 2, BODY / 2 + 2, w, 28, 6).fill({ color: COLORS.plate, alpha: 0.94 }).stroke({ width: 1, color: 0xe5eaef });
       }
     }
     for (const [id, v] of this.views) {
@@ -628,7 +628,7 @@ export class Renderer {
         cg.stroke({ width: 2.4, color: CABLE_COLOR[c.type], alpha: 0.55 });
         const blk = s.devices[runtime.stpBlocked[c.id]!];
         const end = blk && c.b.deviceId === blk.id ? pts[pts.length - 1]! : pts[0]!;
-        cg.circle(end.x, end.y, 5).fill({ color: COLORS.healthWarn }).stroke({ width: 1.2, color: COLORS.background });
+        cg.circle(end.x, end.y, 5).fill({ color: COLORS.healthWarn }).stroke({ width: 1.2, color: COLORS.plate });
         continue;
       }
       const storm = runtime.storm[c.a.deviceId] && runtime.storm[c.b.deviceId];
@@ -698,8 +698,8 @@ export class Renderer {
       pos = this.alongCable(cable, hop!.deviceId, c.progress);
       if (!pos) continue;
       const color = c.kind === 'attack' ? COLORS.carrierAttack : c.kind === 'probe' ? COLORS.healthWarn
-        : c.kind === 'control' ? 0x7fe3a0 : c.kind === 'backup' ? 0xffd27a : c.kind === 'backend' || c.kind === 'proxied' ? 0xc7b8ff
-        : c.kind === 'transit' ? 0x5fb8ff : COLORS.carrierNormal;
+        : c.kind === 'control' ? 0x13a882 : c.kind === 'backup' ? 0xe09a00 : c.kind === 'backend' || c.kind === 'proxied' ? 0x7460ee
+        : c.kind === 'transit' ? 0x03a9c7 : COLORS.carrierNormal;
       cg.circle(pos.x, pos.y, c.size).fill({ color, alpha: 0.9 });
     }
 
@@ -713,9 +713,9 @@ export class Renderer {
         const pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.006);
         hg.roundRect(bx - 8, by - 8, BODY + 8, BODY + 8, 8).stroke({ width: 2, color: COLORS.strangerRim, alpha: 0.4 + 0.5 * pulse });
         hg.circle(bx, by, 6).fill({ color: COLORS.strangerRim });
-        hg.moveTo(bx - 3, by - 3).lineTo(bx + 3, by + 3).moveTo(bx + 3, by - 3).lineTo(bx - 3, by + 3).stroke({ width: 1.8, color: COLORS.background });
+        hg.moveTo(bx - 3, by - 3).lineTo(bx + 3, by + 3).moveTo(bx + 3, by - 3).lineTo(bx - 3, by + 3).stroke({ width: 1.8, color: COLORS.plate });
       } else if (d.sw && d.sw.patch < s.staff.release) {
-        hg.circle(bx, by + BODY - 8, 5).fill({ color: COLORS.background, alpha: 0.85 });
+        hg.circle(bx, by + BODY - 8, 5).fill({ color: COLORS.plate, alpha: 0.95 });
         hg.poly([bx, by + BODY - 12, bx + 3.5, by + BODY - 7, bx - 3.5, by + BODY - 7]).fill({ color: COLORS.healthWarn });
       }
       // only what someone knows about gets a badge
@@ -727,7 +727,7 @@ export class Renderer {
       const cy = (d.gridPos.gy + 0.5) * CELL - BODY / 2 + 4;
       const color = repairing ? COLORS.carrierNormal : alert ? COLORS.healthBad : COLORS.healthWarn;
       // Outer ring
-      hg.circle(cx, cy, 6).fill({ color: COLORS.background, alpha: 0.85 });
+      hg.circle(cx, cy, 6).fill({ color: COLORS.plate, alpha: 0.95 });
       hg.circle(cx, cy, 5).fill({ color });
 
       // Pulsing effect for failed/critical devices

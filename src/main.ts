@@ -124,9 +124,9 @@ function showSaveText(text: string, filename: string): void {
   document.getElementById('save-dialog')?.remove();
   const box = document.createElement('div');
   box.id = 'save-dialog';
-  box.style.cssText = 'position:fixed;inset:0;z-index:100;display:grid;place-items:center;background:rgb(0 0 0 / .5);padding:16px';
+  box.style.cssText = 'position:fixed;inset:0;z-index:100;display:grid;place-items:center;background:rgb(42 53 71 / .45);padding:16px';
   const card = document.createElement('div');
-  card.style.cssText = 'width:min(560px,100%);display:grid;gap:10px;padding:16px;background:var(--paper);border:1px solid var(--line-strong);border-radius:10px;color:var(--ink);font:13px var(--font-body)';
+  card.style.cssText = 'width:min(560px,100%);display:grid;gap:10px;padding:16px;background:var(--paper);border:0;border-radius:var(--radius);box-shadow:var(--shadow-lg);color:var(--ink);font:13px var(--font-body)';
   const h = document.createElement('b');
   h.textContent = `Save as text (${filename})`;
   const p = document.createElement('p');

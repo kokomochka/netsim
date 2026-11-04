@@ -1,19 +1,15 @@
 // SVG twins of the canvas icons, for the palette and panel headers.
 // Plain DOM version — returns SVG element strings (no Lit dependency).
+import { KIND_COLOR } from '../render/palette';
 import { assertNever, type DeviceKind } from '../state/types';
 
-export const KIND_CSS: Record<DeviceKind, string> = {
-  uplink: '#c7b8ff',
-  server: '#7fd1ff',
-  router: '#ffd27a',
-  switch: '#8fe3a5',
-  firewall: '#ff8f86',
-  ddos_scrubber: '#ff61d8',
-  desk: '#e0b98c',
-  tower: '#c7b8ff',
-  ac: '#9fe8ff',
-  badge: '#7fe3a0',
-};
+/** CSS hex for a Pixi 0xRRGGBB colour. */
+export const hex = (n: number): string => '#' + n.toString(16).padStart(6, '0');
+
+// Same hues as the canvas, so palette, panels and map agree.
+export const KIND_CSS = Object.fromEntries(
+  Object.entries(KIND_COLOR).map(([k, v]) => [k, hex(v)]),
+) as Record<DeviceKind, string>;
 
 function svgWrap(size: number, body: string): string {
   return `<svg width="${size}" height="${size}" viewBox="-18 -18 36 36" aria-hidden="true">${body}</svg>`;
@@ -26,7 +22,7 @@ export function kindGlyph(kind: DeviceKind, size = 26): string {
     case 'server':
       body = `<rect x="-11" y="-14" width="22" height="28" rx="2.5" fill="${c}" fill-opacity=".16" stroke="${c}" stroke-width="2"/>
         <path d="M-7 -7H3M-7 -1H3M-7 5H3" stroke="${c}" stroke-width="1.6"/>
-        <circle cx="6.5" cy="-7" r="1.9" fill="#6dff9c"/>`;
+        <circle cx="6.5" cy="-7" r="1.9" fill="#13c98a"/>`;
       break;
     case 'router':
       body = `<circle r="15" fill="${c}" fill-opacity=".16" stroke="${c}" stroke-width="2"/>

@@ -3,13 +3,14 @@ import { ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TILE_PRICE } from '../balance';
 import { DEVICE_DEFS, NETWORK_KINDS } from '../state/devices';
 import type { CableType, Tile } from '../state/types';
 import { setTool, ui } from '../state/world';
-import { cableGlyph, kindGlyph, selectGlyph } from './glyphs';
+import { CABLE_COLOR } from '../render/palette';
+import { cableGlyph, hex, kindGlyph, selectGlyph } from './glyphs';
 import { baseStyle } from './styles';
 
 const CABLE_TYPES: { type: CableType; label: string; color: string }[] = [
-  { type: 'ethernet', label: 'Ethernet', color: '#b4c2d4' },
-  { type: 'fibre', label: 'Fibre', color: '#ffa94d' },
-  { type: 'crossover', label: 'Crossover', color: '#5fb8ff' },
+  { type: 'ethernet', label: 'Ethernet', color: hex(CABLE_COLOR.ethernet) },
+  { type: 'fibre', label: 'Fibre', color: hex(CABLE_COLOR.fibre) },
+  { type: 'crossover', label: 'Crossover', color: hex(CABLE_COLOR.crossover) },
 ];
 
 const BUILD_TOOLS: { tile: Tile; label: string; title: string }[] = [
@@ -23,13 +24,13 @@ const BUILD_TOOLS: { tile: Tile; label: string; title: string }[] = [
 ];
 
 const TILE_SVG: Record<Tile, string> = {
-  floor: '<rect x="-12" y="-12" width="24" height="24" rx="2" fill="#4c535c" stroke="#8b939c" stroke-width="1.5"/><path d="M-12 0H12M0 -12V12" stroke="#6b737c" stroke-width="1"/>',
-  raised: '<rect x="-12" y="-12" width="24" height="24" rx="2" fill="#3c4756" stroke="#8fa0b5" stroke-width="1.5"/><g fill="#8fa0b5"><circle cx="-6" cy="-6" r="1.3"/><circle cx="6" cy="-6" r="1.3"/><circle cx="-6" cy="6" r="1.3"/><circle cx="6" cy="6" r="1.3"/></g>',
-  wall: '<rect x="-13" y="-5" width="26" height="10" fill="#d8d2c4"/><rect x="-5" y="-13" width="10" height="26" fill="#d8d2c4"/>',
-  door: '<rect x="-13" y="-4" width="5" height="8" fill="#d8d2c4"/><rect x="8" y="-4" width="5" height="8" fill="#d8d2c4"/><path d="M-8 0V-14" stroke="#c49a6c" stroke-width="2.5"/><path d="M-8 -14A14 14 0 0 1 6 0" fill="none" stroke="#c49a6c" stroke-width="1"/>',
-  smartdoor: '<rect x="-13" y="-4" width="5" height="8" fill="#d8d2c4"/><rect x="8" y="-4" width="5" height="8" fill="#d8d2c4"/><path d="M-8 0V-14" stroke="#7fe3a0" stroke-width="2.5"/><path d="M-8 -14A14 14 0 0 1 6 0" fill="none" stroke="#7fe3a0" stroke-width="1"/><circle cx="0" cy="6" r="3" fill="#7fe3a0"/>',
+  floor: '<rect x="-12" y="-12" width="24" height="24" rx="2" fill="#f3f6fa" stroke="#b6c1cf" stroke-width="1.5"/><path d="M-12 0H12M0 -12V12" stroke="#d3dbe5" stroke-width="1"/>',
+  raised: '<rect x="-12" y="-12" width="24" height="24" rx="2" fill="#e1e8f0" stroke="#94a3b8" stroke-width="1.5"/><g fill="#94a3b8"><circle cx="-6" cy="-6" r="1.3"/><circle cx="6" cy="-6" r="1.3"/><circle cx="-6" cy="6" r="1.3"/><circle cx="6" cy="6" r="1.3"/></g>',
+  wall: '<rect x="-13" y="-5" width="26" height="10" fill="#5d6b82"/><rect x="-5" y="-13" width="10" height="26" fill="#5d6b82"/>',
+  door: '<rect x="-13" y="-4" width="5" height="8" fill="#5d6b82"/><rect x="8" y="-4" width="5" height="8" fill="#5d6b82"/><path d="M-8 0V-14" stroke="#b7834d" stroke-width="2.5"/><path d="M-8 -14A14 14 0 0 1 6 0" fill="none" stroke="#b7834d" stroke-width="1"/>',
+  smartdoor: '<rect x="-13" y="-4" width="5" height="8" fill="#5d6b82"/><rect x="8" y="-4" width="5" height="8" fill="#5d6b82"/><path d="M-8 0V-14" stroke="#13a882" stroke-width="2.5"/><path d="M-8 -14A14 14 0 0 1 6 0" fill="none" stroke="#13a882" stroke-width="1"/><circle cx="0" cy="6" r="3" fill="#13a882"/>',
   ground: '<rect x="-12" y="-12" width="24" height="24" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 3"/><path d="M-6 -6L6 6M6 -6L-6 6" stroke="currentColor" stroke-width="1.8"/>',
-  vent: '<rect x="-13" y="-5" width="26" height="10" fill="#d8d2c4"/><rect x="-9" y="-9" width="18" height="18" rx="3" fill="#1d2a35" stroke="#9fe8ff" stroke-width="1.8"/><path d="M-5 -6V6M-1.5 -6V6M2 -6V6M5.5 -6V6" stroke="#9fe8ff" stroke-width="1.3"/>',
+  vent: '<rect x="-13" y="-5" width="26" height="10" fill="#5d6b82"/><rect x="-9" y="-9" width="18" height="18" rx="3" fill="#ffffff" stroke="#03a9c7" stroke-width="1.8"/><path d="M-5 -6V6M-1.5 -6V6M2 -6V6M5.5 -6V6" stroke="#03a9c7" stroke-width="1.3"/>',
 };
 
 function tileGlyph(t: Tile): string {
@@ -38,41 +39,61 @@ function tileGlyph(t: Tile): string {
 
 const PALETTE_CSS = `
   :host {
-    display: flex; flex-direction: column; gap: 6px;
-    background: var(--paper); border-right: 1px solid var(--line);
-    padding: 10px 8px; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 2px; width: 212px;
+    background: var(--paper); margin: 0 14px 14px 14px; border-radius: var(--radius); box-shadow: var(--shadow-sm);
+    padding: 14px 12px; overflow-y: auto;
   }
-  .group { display: flex; flex-direction: column; gap: 6px; }
-  .sep { height: 1px; background: var(--line); margin: 4px 2px; flex: none; }
+  .group { display: flex; flex-direction: column; gap: 2px; }
+  .sep { height: 0; margin: 6px 0; flex: none; }
   .tool {
-    display: grid; justify-items: center; gap: 2px; padding: 7px 4px 6px; width: 76px;
-    background: transparent; border: 1px solid transparent; border-radius: 8px; color: var(--ink-dim);
+    display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; column-gap: 10px;
+    padding: 6px 10px 6px 6px; width: 100%; min-height: 46px; text-align: left;
+    background: transparent; border: 0; border-radius: 10px; color: var(--ink-dim);
   }
-  .tool:hover { background: var(--raised); border-color: var(--line); color: var(--ink); }
+  .tool .glyph { grid-row: span 2; width: 34px; height: 34px; border-radius: 9px; background: var(--well); transition: background .15s; }
+  .tool .glyph svg { width: 24px; height: 24px; }
+  .tool:hover { background: var(--accent-soft); color: var(--accent); border: 0; }
+  .tool:hover .glyph { background: var(--paper); }
   .tool[aria-pressed="true"] {
-    background: var(--raised); border-color: var(--accent); color: var(--ink);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+    background: var(--accent); color: #fff;
+    box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 35%, transparent);
   }
-  .name { font-size: 11.5px; font-weight: 500; text-align: center; line-height: 1.15; }
-  .head { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); text-align: center; padding-top: 2px; }
-  .price { font-family: var(--font-mono); font-size: 10px; color: var(--ink-faint); }
-  .cables { display: flex; flex-direction: column; gap: 4px; }
+  .tool[aria-pressed="true"] .glyph { background: #fff; color: var(--accent); }
+  .tool[aria-pressed="true"] .price { color: rgb(255 255 255 / .8); }
+  .name { font-size: 13px; font-weight: 600; line-height: 1.2; align-self: end; }
+  .price { font-size: 11px; font-weight: 500; color: var(--ink-faint); align-self: start; font-variant-numeric: tabular-nums; }
+  .head {
+    font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--ink);
+    padding: 10px 8px 6px;
+  }
+  .cables { display: flex; flex-direction: column; gap: 4px; padding: 4px 0 4px 50px; }
   .chip {
-    display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 3px 7px;
-    font-size: 11px; border-radius: 6px; background: transparent; border-color: var(--line);
+    display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 3px 10px;
+    font-size: 12px; border-radius: 8px; background: transparent; border-color: transparent;
   }
-  .chip[aria-pressed="true"] { border-color: var(--accent); background: var(--raised); }
-  .swatch { width: 14px; height: 3px; border-radius: 2px; flex: none; }
+  .chip[aria-pressed="true"] { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: var(--accent-soft); color: var(--accent); }
+  .swatch { width: 16px; height: 4px; border-radius: 2px; flex: none; }
   .glyph { display: flex; align-items: center; justify-content: center; }
+  @media (max-width: 1100px) {
+    :host { width: 96px; padding: 10px 8px; }
+    .tool { grid-template-columns: 1fr; justify-items: center; text-align: center; row-gap: 3px; padding: 7px 4px; }
+    .tool .glyph { grid-row: auto; }
+    .name { font-size: 11.5px; align-self: auto; }
+    .price { align-self: auto; }
+    .head { text-align: center; font-size: 9.5px; padding: 8px 2px 4px; }
+    .cables { padding: 2px 0; }
+    .chip { font-size: 11px; padding: 2px 6px; }
+  }
   @media (max-width: 759px) {
     :host {
-      flex-direction: row; border-right: 0; border-top: 1px solid var(--line);
+      flex-direction: row; width: auto; margin: 0; border-radius: 0; box-shadow: 0 -2px 10px rgb(42 53 71 / .08);
       padding: 6px max(8px, env(safe-area-inset-right, 0px)) calc(6px + env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-left, 0px));
       overflow-x: auto; overflow-y: hidden; gap: 4px; align-items: stretch;
     }
     .group { flex-direction: row; gap: 4px; }
-    .sep { width: 1px; height: auto; margin: 4px 2px; }
-    .tool { width: 64px; flex: none; }
+    .head { writing-mode: vertical-rl; transform: rotate(180deg); padding: 4px 2px; }
+    .sep { width: 1px; height: auto; margin: 4px 2px; background: var(--line); }
+    .tool { width: 68px; flex: none; }
     .cables { flex-direction: column; justify-content: center; }
     .chip { min-height: 22px; padding: 1px 6px; font-size: 10.5px; }
   }
@@ -118,6 +139,10 @@ export class NsPalette extends HTMLElement {
     toolGroup.className = 'group';
     toolGroup.setAttribute('role', 'toolbar');
     toolGroup.setAttribute('aria-label', 'Tools');
+    const headT = document.createElement('span');
+    headT.className = 'head';
+    headT.textContent = 'Tools';
+    toolGroup.appendChild(headT);
 
     // Select button
     const selectBtn = this.makeToolButton(
@@ -169,6 +194,10 @@ export class NsPalette extends HTMLElement {
     devGroup.className = 'group';
     devGroup.setAttribute('role', 'toolbar');
     devGroup.setAttribute('aria-label', 'Devices');
+    const headD = document.createElement('span');
+    headD.className = 'head';
+    headD.textContent = 'Network';
+    devGroup.appendChild(headD);
 
     for (const k of NETWORK_KINDS) {
       const def = DEVICE_DEFS[k];
