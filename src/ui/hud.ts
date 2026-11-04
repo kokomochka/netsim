@@ -5,7 +5,7 @@ import { uptimePercent } from '../sim/engine';
 import { DEVICE_DEFS } from '../state/devices';
 import { ENGINEER_HIRE, ENGINEER_SALARY } from '../balance';
 import { engineerActivity, smartDoorsLocked } from '../sim/staff';
-import { addPublicAddr, buyDomain, dropDomain, editDomain, fireEngineer, hireEngineer, onToast, removePublicAddr, runtime, toast, togglePublicService, ui, world, type ToastKind } from '../state/world';
+import { addPublicAddr, buyDomain, dropDomain, editDomain, fireEngineer, hireEngineer, onToast, publicIps, removePublicAddr, runtime, toast, togglePublicService, ui, world, type ToastKind } from '../state/world';
 import { DOMAIN_RENEWAL, REGISTRAR_DNS_FEE, TLDS } from '../balance';
 import { resolvePublic } from '../sim/dns';
 import { buildCtx } from '../sim/net';
@@ -520,7 +520,7 @@ export class NsGoals extends HTMLElement {
           firstOpen = false;
           det.innerHTML = '<summary>How to do it</summary>';
           const ol = document.createElement('ol');
-          for (const h of a.how) { const li = document.createElement('li'); li.textContent = h; ol.appendChild(li); }
+          for (const h of typeof a.how === 'function' ? a.how(world.get()) : a.how) { const li = document.createElement('li'); li.textContent = h; ol.appendChild(li); }
           det.appendChild(ol);
           card.appendChild(det);
         }
@@ -547,7 +547,7 @@ NsGoals.prototype.renderDomains = function renderDomains(this: NsGoals): void {
   const ipRow = mk('div');
   ipRow.style.cssText = 'display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px';
   const ipIn = mk('input');
-  ipIn.id = 'pip-new'; ipIn.placeholder = '203.0.113.5'; ipIn.setAttribute('aria-label', 'Public IP');
+  ipIn.id = 'pip-new'; ipIn.placeholder = publicIps(world.get())[3] ?? '203.0.113.5'; ipIn.setAttribute('aria-label', 'Public IP');
   ipIn.addEventListener('keydown', (e) => e.stopPropagation());
   const ipAdd = mk('button', '', 'Add IP');
   ipAdd.addEventListener('click', () => { const e = addPublicAddr(ipIn.value); if (e) toast(e, 'error'); });

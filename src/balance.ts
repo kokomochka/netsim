@@ -262,6 +262,15 @@ export const LATERAL_SECONDS = 15;
 export const CABLE_PRICE: Record<CableType, number> = { ethernet: 5, fibre: 40, crossover: 5 };
 export const CABLE_BANDWIDTH: Record<CableType, number> = { ethernet: 1000, fibre: 10000, crossover: 1000 };
 
+/** First octets the ISP hands blocks out of (and attackers never come from). */
+export const PLAYER_BLOCK_OCTETS = [45, 62, 81, 91, 103, 141, 185, 193, 195, 212, 217];
+/** Bigger public blocks: each step doubles the block around the addresses you have. */
+export const PUBLIC_BLOCK_UPGRADES: { prefix: number; price: number }[] = [
+  { prefix: 27, price: 1500 },
+  { prefix: 26, price: 4000 },
+  { prefix: 25, price: 9000 },
+];
+
 export const UPLINK_START = {
   publicSubnet: '203.0.113.0/28',
   uplinkIp: '203.0.113.1',

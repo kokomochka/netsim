@@ -4,19 +4,32 @@
 import { MINUTE, TICKS_PER_SEC } from './balance';
 import { notify } from './sim/engine';
 import { pathMatches } from './sim/net';
+import { formatIp, parseCidr } from './state/ip';
 import type { AchievementId, AchievementState, RuntimeCache, Unlocks, WorldState } from './state/types';
 
 export interface AchievementDef {
   id: AchievementId;
   title: string;
   goal: string;
-  how: string[];               // step-by-step hints for apprentices
+  how: string[] | ((s: WorldState) => string[]);   // step-by-step hints for apprentices (may quote your addresses)
   reward: string;
   cash?: number;
   unlocks?: (keyof Unlocks)[];
   requires?: AchievementId[];  // shown as locked until these are done
   target?: number;             // for a progress bar
   progress(s: WorldState, c: RuntimeCache): number;   // 0..target (or 0/1)
+}
+
+/** The player's public block, for hints that quote real addresses. */
+function block(s: WorldState) {
+  const up = Object.values(s.devices).find((d) => d.kind === 'uplink');
+  const subnet = up?.kind === 'uplink' ? up.publicSubnet : '203.0.113.0/28';
+  const c = parseCidr(subnet) ?? { net: 0, prefix: 28 };
+  return {
+    subnet, prefix: c.prefix, gateway: up?.kind === 'uplink' ? up.uplinkIp : formatIp(c.net + 1),
+    mask: formatIp(c.prefix ? (0xffffffff << (32 - c.prefix)) >>> 0 : 0),
+    host: (n: number) => formatIp((c.net + n) >>> 0),
+  };
 }
 
 const liveServices = (s: WorldState) => Object.values(s.services).filter((v) => v.availability >= 0.95);
@@ -26,13 +39,13 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     id: 'hello_world',
     title: 'Hello, world',
     goal: 'Get one website answering visitors from the internet for 10 seconds.',
-    how: [
+    how: (s) => { const b = block(s); return [
       'Pick the Cable tool and run a cable from the ISP uplink to Server-1.',
-      'Open Server-1. Give it a free address from your public block, e.g. 203.0.113.2, mask /28 (255.255.255.240).',
-      'Set its gateway to the ISP router, 203.0.113.1.',
+      `Open Server-1. Give it a free address from your public block ${b.subnet}, e.g. ${b.host(2)}, mask /${b.prefix} (${b.mask}).`,
+      `Set its gateway to the ISP router, ${b.gateway}.`,
       'Under Roles, add Website.',
-      'Open the Internet tab, add 203.0.113.2 under Public IPs and tick Server-1\'s website.',
-    ],
+      `Open the Internet tab, add ${b.host(2)} under Public IPs and tick Server-1's website.`,
+    ]; },
     reward: '$100',
     cash: 100,
     target: 10,
@@ -42,13 +55,13 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     id: 'locked_down',
     title: 'Locked down',
     goal: 'Serve a site through a firewall with default policy deny and an explicit allow rule.',
-    how: [
+    how: (s) => [
       'Put a firewall between the uplink and your server: outside port to the ISP, inside port to the server side.',
-      'Outside interface: a public IP like 203.0.113.2/28. Inside: a private network like 192.168.10.1/24.',
+      `Outside interface: a public IP like ${block(s).host(2)}/${block(s).prefix}. Inside: a private network like 192.168.10.1/24.`,
       'Move the server to 192.168.10.10/24 with gateway 192.168.10.1.',
       'Note: the firewall ports are eth0 (outside), eth1 (inside), eth2 (dmz), eth3 (spare).',
-      'Firewall: static route 0.0.0.0/0 via 203.0.113.1 for replies.',
-      'Firewall NAT: public 203.0.113.5 → private 192.168.10.10. In the Internet tab, put the website on 203.0.113.5.',
+      `Firewall: static route 0.0.0.0/0 via ${block(s).gateway} for replies.`,
+      `Firewall NAT: public ${block(s).host(5)} → private 192.168.10.10. In the Internet tab, put the website on ${block(s).host(5)}.`,
       'ACL: allow tcp from outside to inside, destination 192.168.10.10, port 80.',
     ],
     reward: '$150',

@@ -14,6 +14,7 @@ import {
 import { carryComps, diskPrice, freshComps, roleUse, serverCaps, serverPrice, serverUpkeep, specsFor, wipesArray } from '../state/hardware';
 import { compName, effTflops, failedComps, hwFastTick, serverDown, setHwHooks, syncHealth } from './hw';
 import { knownProblems, monitorFlows, noticeTick, setMonitorHooks } from './monitor';
+import { PLAYER_BLOCK_OCTETS } from '../balance';
 import { backendPort } from './net';
 import { cancelJob, compromise, createJob, deskReaches, setStaffHooks, spawnTrespasser, staffTick } from './staff';
 import { checkAchievements } from '../progress';
@@ -1114,7 +1115,7 @@ function randomRange24(): string {
   // public-looking /24 that is not RFC1918, not our documentation block, not multicast
   for (;;) {
     const a = 11 + Math.floor(Math.random() * 212);
-    if ([127, 169, 172, 192, 198, 203, 100, 10].includes(a)) continue;
+    if ([127, 169, 172, 192, 198, 203, 100, 10, ...PLAYER_BLOCK_OCTETS].includes(a)) continue;
     return `${a}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}.0/24`;
   }
 }

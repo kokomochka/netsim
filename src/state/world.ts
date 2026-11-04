@@ -1,5 +1,5 @@
 // The two stores (saved world + transient UI) and every world mutation. Phase 2.
-import { CERT_PRICE, CHASSIS, ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TLDS, MAX_DISKS, MAX_SERVER_PORTS, MEDIA_SWAP_PRICE, OUTSIDE_TEMP, ENGINEER_HIRE, ROLES, START_BALANCE, TILE_PRICE, UPLINK_TIER, UPTIME_BUCKETS } from '../balance';
+import { CERT_PRICE, CHASSIS, ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TLDS, MAX_DISKS, MAX_SERVER_PORTS, MEDIA_SWAP_PRICE, OUTSIDE_TEMP, ENGINEER_HIRE, ROLES, START_BALANCE, TILE_PRICE, UPLINK_TIER, UPTIME_BUCKETS, PLAYER_BLOCK_OCTETS, PUBLIC_BLOCK_UPGRADES, UPLINK_START } from '../balance';
 import { freshAchievements } from '../progress';
 import { DEVICE_DEFS, SERVER_PORT_LAYOUT, defOf } from './devices';
 import { inMap, inParking, isIndoor, placementError, starterFloor, tileAt } from './floor';
@@ -15,6 +15,8 @@ import type {
 import { formatIp, parseCidr, parseIp } from './ip';
 
 export const SCHEMA_VERSION = 12;
+/** Test hooks: instant part deliveries, the documentation block instead of a random one. */
+export const testFlags = { instantParts: false, fixedPublicBlock: false };
 
 export type Tool =
   | { mode: 'select' }
@@ -103,6 +105,10 @@ export function newWorld(): WorldState {
   };
   const id = nextId(s, 'dev');
   s.devices[id] = DEVICE_DEFS.uplink.create(id, 'ISP Uplink', { gx: 2, gy: 6 });
+  // every new game gets its own /28 from the ISP
+  const blk = testFlags.fixedPublicBlock ? { subnet: UPLINK_START.publicSubnet, gateway: UPLINK_START.uplinkIp } : randomPublicBlock();
+  const up = s.devices[id]!;
+  if (up.kind === 'uplink') { up.publicSubnet = blk.subnet; up.uplinkIp = blk.gateway; }
   const sid = nextId(s, 'dev');
   s.devices[sid] = DEVICE_DEFS.server.create(sid, 'Server-1', { gx: 6, gy: 6 });
   const e = makeEngineer(s, 10.5, 8.5);
@@ -357,6 +363,43 @@ export function resetWorld(): void {
 
 // ---------- services, roles, hardware ----------
 
+/** A random /28 out of the ISP's ranges; the ISP router takes the first address. */
+export function randomPublicBlock(): { subnet: string; gateway: string } {
+  const a = PLAYER_BLOCK_OCTETS[Math.floor(Math.random() * PLAYER_BLOCK_OCTETS.length)]!;
+  const b = 1 + Math.floor(Math.random() * 254);
+  const c = Math.floor(Math.random() * 256);
+  const d = Math.floor(Math.random() * 16) * 16;
+  return { subnet: `${a}.${b}.${c}.${d}/28`, gateway: `${a}.${b}.${c}.${d + 1}` };
+}
+
+/** Next bigger public block, or null at the largest. */
+export function nextBlockUpgrade(s: WorldState): { prefix: number; price: number; subnet: string } | null {
+  const up = Object.values(s.devices).find((d) => d.kind === 'uplink');
+  const c = up?.kind === 'uplink' ? parseCidr(up.publicSubnet) : null;
+  if (!c) return null;
+  const next = PUBLIC_BLOCK_UPGRADES.find((u) => u.prefix === c.prefix - 1);
+  if (!next) return null;
+  const mask = (0xffffffff << (32 - next.prefix)) >>> 0;
+  return { ...next, subnet: `${formatIp((c.net & mask) >>> 0)}/${next.prefix}` };
+}
+
+/** Buy the next bigger block. It contains the old one, so every address in use keeps working. */
+export function buyBiggerBlock(): string | null {
+  const s = world.get();
+  const u = nextBlockUpgrade(s);
+  if (!u) return 'You already have the biggest block your ISP offers.';
+  if (s.economy.balance < u.price) return `A /${u.prefix} costs $${u.price.toLocaleString()}.`;
+  world.update((w) => {
+    const up = Object.values(w.devices).find((d) => d.kind === 'uplink');
+    if (up?.kind !== 'uplink') return;
+    up.publicSubnet = u.subnet;
+    w.economy.balance -= u.price;
+    w.economy.totalSpent += u.price;
+    runtime.topologyDirty = true;
+  });
+  return null;
+}
+
 /** Usable addresses of the public block, minus the ISP gateway. */
 export function publicIps(s: WorldState): string[] {
   const up = Object.values(s.devices).find((d) => d.kind === 'uplink');
@@ -513,7 +556,6 @@ export function pendingParts(s: WorldState, id: DeviceId): ServerParts | null {
 }
 
 /** Is the server still on the bench (no cables)? Then parts are fitted straight away. */
-export const testFlags = { instantParts: false };
 export function onBench(s: WorldState, id: DeviceId): boolean {
   return testFlags.instantParts || !Object.values(s.cables).some((c) => c.a.deviceId === id || c.b.deviceId === id);
 }

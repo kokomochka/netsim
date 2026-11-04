@@ -35,7 +35,7 @@ import {
   overlapCheck, serverGatewayCheck,
 } from '../state/validate';
 import {
-  addRole, allFqdns, editRole, setRoleLinks, setPortMedia, setServiceFqdn, buyPart, deleteCable, deleteDevice, editDevice, genId, publicIps, removeRole, rotateDevice, runtime,
+  addRole, allFqdns, buyBiggerBlock, nextBlockUpgrade, editRole, setRoleLinks, setPortMedia, setServiceFqdn, buyPart, deleteCable, deleteDevice, editDevice, genId, publicIps, removeRole, rotateDevice, runtime,
   select, setCableType, setServicePublicIp, setUplinkTier, toast, ui, world, cancelUpgrade, onBench, pendingParts, setCert,
 } from '../state/world';
 import { cableGlyph, kindCss, kindGlyph } from './glyphs';
@@ -639,7 +639,7 @@ export class NsInspector extends HTMLElement {
       const c = natCheck(s, d as RouterDevice | FirewallDevice, n.publicIp, n.privateIp);
       const upd = (fn: (x: typeof n) => void) => edit((x) => { const r = x.nat[i]; if (r) fn(r); });
       const row = el('div', 'row nat-row');
-      row.appendChild(makeInput(`${n.id}-pub`, n.publicIp, { placeholder: '203.0.113.5', ariaLabel: 'Public IP', onCommit: (v) => upd((x) => { x.publicIp = v; }) }));
+      row.appendChild(makeInput(`${n.id}-pub`, n.publicIp, { placeholder: publicIps(s)[3] ?? '203.0.113.5', ariaLabel: 'Public IP', onCommit: (v) => upd((x) => { x.publicIp = v; }) }));
       row.appendChild(el('span', 'arrow', '→'));
       row.appendChild(makeInput(`${n.id}-priv`, n.privateIp, { placeholder: '192.168.10.10', ariaLabel: 'Private IP', onCommit: (v) => upd((x) => { x.privateIp = v; }) }));
       row.appendChild(btn('✕', () => edit((x) => { x.nat.splice(i, 1); }), 'icon-btn danger', 'Delete NAT entry'));
@@ -684,6 +684,16 @@ export class NsInspector extends HTMLElement {
       <dt>Your addresses</dt><dd>${publicIps(s)[0]} – ${publicIps(s).slice(-1)[0]} (${size - 3})</dd>`;
     const info = section('Internet connection', kv,
       el('p', 'note', 'Visitors and attacks arrive on the WAN port. The ISP asks "who has <public IP>?" on this link, so a device behind it must own that address or NAT it. Use the ISP gateway as your default route\'s next hop.'));
+    const nb = nextBlockUpgrade(s);
+    if (nb) {
+      const cnt = 2 ** (32 - nb.prefix) - 3;
+      info.appendChild(btn(`Buy a bigger block: /${nb.prefix} (${cnt} addresses) · $${nb.price.toLocaleString()}`, () => {
+        const err = buyBiggerBlock();
+        if (err) toast(err, 'error');
+        else toast(`Your public block is now ${nb.subnet}. Widen the mask on your edge device (/${nb.prefix}) to use the new addresses.`, 'good');
+      }, 'add', `Becomes ${nb.subnet}. It contains your current block, so nothing in use changes.`));
+      info.appendChild(el('p', 'sub', `Becomes ${nb.subnet}: your current addresses stay. To use the new ones, set the mask of your edge device's outside interface to /${nb.prefix}.`));
+    } else info.appendChild(el('p', 'sub', 'This is the biggest block your ISP offers.'));
 
     const bw = () => Math.max(1, (world.get().devices[d.id] as DeviceOf<'uplink'>).bandwidthMbps);
     const tierSec = section(heading('Line', this.liveText(() => `${mbps(Math.min(runtime.uplinkMbps, bw()))} / ${mbps(bw())}`)));
