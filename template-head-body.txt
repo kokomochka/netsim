@@ -1,0 +1,60 @@
+<title>NetSim</title>
+<style>:root{color-scheme:dark}</style>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" />
+<style>
+  :root {
+    color-scheme: dark;
+    --canvas: #0c2240;
+    --paper: #0f2747;
+    --well: #0a1c34;
+    --well-soft: rgb(10 28 52 / 0.55);
+    --raised: #16345b;
+    --raised-hover: #1d406d;
+    --line: #24476f;
+    --line-strong: #34598a;
+    --ink: #e4eeff;
+    --ink-dim: #a7bfe2;
+    --ink-faint: #7592ba;
+    --accent: #5fd0ff;
+    --ok: #7fe3a0;
+    --warn: #ffc861;
+    --bad: #ff7a72;
+    --font-display: "Chakra Petch", "Bahnschrift", "DIN Alternate", system-ui, sans-serif;
+    --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  html { height: 100%; box-sizing: border-box; background: var(--canvas); }
+  body {
+    height: 100%; margin: 0; overflow: hidden;
+    background: var(--canvas); color: var(--ink); font-family: var(--font-body);
+    -webkit-tap-highlight-color: transparent; overscroll-behavior: none;
+  }
+  #app {
+    height: 100%; display: grid;
+    grid-template: "top top" auto "pal stage" minmax(0, 1fr) / auto minmax(0, 1fr);
+  }
+  ns-topbar { grid-area: top; }
+  ns-palette { grid-area: pal; }
+  #stage { grid-area: stage; position: relative; overflow: hidden; min-width: 0; min-height: 0; }
+  #stage canvas { display: block; }
+  #boot {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    font-family: var(--font-mono); font-size: 12px; color: var(--ink-faint); letter-spacing: 0.08em;
+  }
+  @media (max-width: 759px) {
+    #app { grid-template: "top" auto "stage" minmax(0, 1fr) "pal" auto / minmax(0, 1fr); }
+  }
+</style>
+<div id="app">
+  <ns-topbar></ns-topbar>
+  <ns-palette></ns-palette>
+  <div id="stage">
+    <div id="boot">LOADING NETSIM…</div>
+    <ns-banner></ns-banner>
+    <ns-goals></ns-goals>
+    <ns-inspector hidden></ns-inspector>
+    <ns-toasts></ns-toasts>
+  </div>
+</div>

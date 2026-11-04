@@ -1,0 +1,790 @@
+// Packet-level path engine (Phase 3).
+//
+// Models what an apprentice has to configure by hand:
+//   • L2: frames cross cables, switches and transparent scrubbers. A host only
+//     reaches an IP that answers ARP on its own segment. Without the MAC
+//     learning unlock, switches flood every port (hub behaviour).
+//   • L3: hosts send to the destination if it is on their subnet, otherwise to
+//     their gateway. Routers and firewalls do longest-prefix match over
+//     connected networks, static routes and (when unlocked) OSPF routes.
+//   • Firewalls: static NAT, then ACL on the real address, zone security
+//     levels, default policy. Return traffic of allowed connections is
+//     permitted (stateful).
+//   • The reply path is resolved too, so a missing gateway, a missing return
+//     route or an un-NATed private source breaks the service.
+
+import { MGMT_PORT, ROLES, SNMP_PORT } from '../balance';
+import { formatCidr, formatIp, inCidr, isAny, parseCidr, parseIp, parsePortRange, prefixToMask, subnetOf, type Cidr } from '../state/ip';
+import type {
+  BlockReason, Cable, CableId, DdosScrubberDevice, Device, DeviceId, FirewallDevice, FirewallInterface,
+  Flow, Hop, L3Device, NatEntry, ResolvedPath, Route, RuntimeCache, WorldState,
+} from '../state/types';
+
+// ─── Context ────────────────────────────────────────────────────────────────
+
+interface Link { cableId: CableId; peerId: DeviceId; peerPort: number; cable: Cable }
+
+export interface NetCtx {
+  s: WorldState;
+  links: Map<string, Link>;
+  learned: RuntimeCache['learned'];
+  /** standby server id → primary server it currently stands in for */
+  standbyFor: Map<DeviceId, DeviceId>;
+  stpBlocked: Record<CableId, DeviceId>;
+  storm: Record<DeviceId, true>;
+}
+
+export function buildCtx(s: WorldState, cache: RuntimeCache): NetCtx {
+  const links = new Map<string, Link>();
+  for (const c of Object.values(s.cables)) {
+    links.set(`${c.a.deviceId}:${c.a.port}`, { cableId: c.id, peerId: c.b.deviceId, peerPort: c.b.port, cable: c });
+    links.set(`${c.b.deviceId}:${c.b.port}`, { cableId: c.id, peerId: c.a.deviceId, peerPort: c.a.port, cable: c });
+  }
+  const standbyFor = new Map<DeviceId, DeviceId>();
+  for (const [primary, standby] of Object.entries(cache.takeover ?? {})) standbyFor.set(standby, primary);
+  return { s, links, learned: cache.learned, standbyFor, stpBlocked: cache.stpBlocked ?? {}, storm: cache.storm ?? {} };
+}
+
+const isL2 = (d: Device) => d.kind === 'switch' || d.kind === 'ddos_scrubber';
+const devUp = (d: Device) => d.health.state !== 'failed' && !(d.health.state === 'repairing' && d.health.repairKind === 'full');
+const ipStr = (n: number) => formatIp(n);
+const portLabel = (d: Device, p: number) => d.ports[p]?.label ?? `port ${p}`;
+
+// ─── Interfaces ─────────────────────────────────────────────────────────────
+
+export interface L3If { port: number; ip: number; ipText: string; cidr: Cidr; name: string }
+
+/** Configured, usable L3 interfaces of a device (port up + cabled). */
+export function l3Ifaces(ctx: NetCtx, d: Device, requireLink = true): L3If[] {
+  const out: L3If[] = [];
+  const add = (port: number, ip: string, mask: string, name: string) => {
+    const n = parseIp(ip);
+    const c = subnetOf(ip, mask);
+    if (n === null || !c) return;
+    if (requireLink && (!d.ports[port]?.up || !ctx.links.has(`${d.id}:${port}`))) return;
+    out.push({ port, ip: n, ipText: ip.trim(), cidr: c, name });
+  };
+  switch (d.kind) {
+    case 'server': add(0, d.ip, d.mask, 'eth0'); d.extra.forEach((x, i) => add(i + 1, x.ip, x.mask, `eth${i + 1}`)); break;
+    case 'desk': add(0, d.ip, d.mask, 'eth0'); break;
+    case 'tower': add(0, d.ip, d.mask, 'eth0'); break;
+    case 'badge': add(0, d.ip, d.mask, 'eth0'); break;
+    case 'router': for (const i of d.interfaces) add(i.port, i.ip, i.mask, portLabel(d, i.port)); break;
+    case 'firewall': for (const i of d.interfaces) add(i.port, i.ip, i.mask, i.name); break;
+    case 'uplink': {
+      const c = parseCidr(d.publicSubnet);
+      if (c) add(0, d.uplinkIp, `/${c.prefix}`, 'WAN');
+      break;
+    }
+    default: break;
+  }
+  return out;
+}
+
+function answersArp(ctx: NetCtx, d: Device, port: number, ip: number): 'own' | 'proxy' | null {
+  const ifs = l3Ifaces(ctx, d).filter((i) => i.port === port);
+  if (ifs.some((i) => i.ip === ip)) return 'own';
+  const primary = ctx.standbyFor.get(d.id);
+  if (primary) { const pd = ctx.s.devices[primary]; if (pd?.kind === 'server' && parseIp(pd.ip) === ip) return 'own'; }
+  if ((d.kind === 'router' || d.kind === 'firewall') && ifs.some((i) => inCidr(ip, i.cidr))) {
+    if (d.nat.some((n) => parseIp(n.publicIp) === ip)) return 'proxy';
+  }
+  return null;
+}
+
+// ─── L2 segment walk ────────────────────────────────────────────────────────
+
+interface SegNode { devId: DeviceId; inPort: number; cableId: CableId; parent: number; outPort: number | null }
+
+interface SegResult {
+  nodes: SegNode[];
+  endpoints: number[];     // indexes of L3 endpoints
+  cables: CableId[];
+  dead: string[];          // reasons branches ended
+}
+
+/** Breadth-first walk of the broadcast domain that starts at dev:port. */
+export function walkSegment(ctx: NetCtx, devId: DeviceId, port: number): SegResult {
+  const res: SegResult = { nodes: [], endpoints: [], cables: [], dead: [] };
+  const seenCable = new Set<CableId>();
+  const queue: { devId: DeviceId; port: number; parent: number }[] = [{ devId, port, parent: -1 }];
+  while (queue.length) {
+    const q = queue.shift()!;
+    const link = ctx.links.get(`${q.devId}:${q.port}`);
+    if (!link || seenCable.has(link.cableId)) continue;
+    if (ctx.stpBlocked[link.cableId]) { seenCable.add(link.cableId); continue; }
+    seenCable.add(link.cableId);
+    res.cables.push(link.cableId);
+    const peer = ctx.s.devices[link.peerId];
+    if (!peer) continue;
+    if (q.parent >= 0) res.nodes[q.parent]!.outPort = res.nodes[q.parent]!.outPort ?? q.port;
+    const idx = res.nodes.push({ devId: peer.id, inPort: link.peerPort, cableId: link.cableId, parent: q.parent, outPort: null }) - 1;
+    if (!devUp(peer)) { res.dead.push(`${peer.name} has failed`); continue; }
+    if (!peer.ports[link.peerPort]?.up) { res.dead.push(`${peer.name} ${portLabel(peer, link.peerPort)} is down (NIC fault)`); continue; }
+    if (peer.kind === 'switch') {
+      if (ctx.storm[peer.id]) { res.dead.push(`broadcast storm on ${peer.name}: switches are looped without spanning tree`); continue; }
+      for (const p of peer.ports) if (p.index !== link.peerPort && p.up) queue.push({ devId: peer.id, port: p.index, parent: idx });
+    } else if (peer.kind === 'ddos_scrubber') {
+      queue.push({ devId: peer.id, port: link.peerPort === 0 ? 1 : 0, parent: idx });
+    } else {
+      res.endpoints.push(idx);
+    }
+  }
+  return res;
+}
+
+// ─── Packet ─────────────────────────────────────────────────────────────────
+
+export interface Pkt {
+  src: number;
+  srcAny: boolean;        // "visitors from everywhere"
+  dst: number;
+  proto: 'tcp' | 'udp' | 'icmp';
+  sport: number;
+  dport: number;
+  syn: boolean;
+  mbps: number;
+  dir: 'fwd' | 'ret';
+  host?: string;          // name the client asked for (HTTP Host / TLS SNI)
+}
+
+function srcMatches(pkt: Pkt, cidrText: string): boolean {
+  if (isAny(cidrText)) return true;
+  const c = parseCidr(cidrText);
+  if (!c) return false;
+  if (pkt.srcAny) return c.prefix === 0;
+  return inCidr(pkt.src, c);
+}
+
+const pktDesc = (p: Pkt) => `${p.srcAny ? 'visitors' : ipStr(p.src)} → ${ipStr(p.dst)} ${p.proto}${p.proto === 'icmp' ? '' : `/${p.dport}`}`;
+
+// ─── Path builder ───────────────────────────────────────────────────────────
+
+class PathBuilder {
+  p: ResolvedPath = {
+    hops: [], blocked: false, blockedAt: null, reason: null, explain: '', ruleId: null,
+    floodCables: [], resources: [], ret: null, reachedServer: null,
+  };
+  matches: string[] = [];
+  hop(h: Omit<Hop, 'cableId'> & { cableId?: CableId | null }): Hop {
+    const full: Hop = { cableId: null, ...h };
+    this.p.hops.push(full);
+    return full;
+  }
+  last(): Hop | undefined { return this.p.hops[this.p.hops.length - 1]; }
+  block(reason: BlockReason, explain: string, ruleId: string | null = null): ResolvedPath {
+    this.p.blocked = true;
+    this.p.reason = reason;
+    this.p.explain = explain;
+    this.p.ruleId = ruleId;
+    this.p.blockedAt = Math.max(0, this.p.hops.length - 1);
+    return this.done();
+  }
+  ok(explain: string): ResolvedPath { this.p.explain = explain; return this.done(); }
+  done(): ResolvedPath {
+    (this.p as ResolvedPath & { matches?: string[] }).matches = this.matches;
+    return this.p;
+  }
+}
+
+export function pathMatches(p: ResolvedPath): string[] {
+  return (p as ResolvedPath & { matches?: string[] }).matches ?? [];
+}
+
+/**
+ * Deliver a frame from `from:outPort` to whoever answers ARP for nextHop.
+ * Appends L2 hops; returns the endpoint reached or null (path blocked).
+ */
+function l2Deliver(ctx: NetCtx, b: PathBuilder, from: Device, outPort: number, nextHop: number, pkt: Pkt): { dev: Device; inPort: number } | null {
+  const link = ctx.links.get(`${from.id}:${outPort}`);
+  if (!link) {
+    b.block('link_down', `${from.name} ${portLabel(from, outPort)} has no cable plugged in.`);
+    return null;
+  }
+  if (!from.ports[outPort]?.up) {
+    b.block('link_down', `${from.name} ${portLabel(from, outPort)} is down (NIC fault).`);
+    return null;
+  }
+  const seg = walkSegment(ctx, from.id, outPort);
+  let target = -1;
+  let how: 'own' | 'proxy' | null = null;
+  for (const i of seg.endpoints) {
+    const n = seg.nodes[i]!;
+    const d = ctx.s.devices[n.devId]!;
+    const a = answersArp(ctx, d, n.inPort, nextHop);
+    if (a) { target = i; how = a; break; }
+  }
+  const lastHop = b.last()!;
+  if (target < 0) {
+    lastHop.cableId = link.cableId;
+    for (const c of seg.cables) if (c !== link.cableId) b.p.floodCables.push(c);
+    b.p.resources.push(`cab:${link.cableId}`);
+    const extra = seg.dead.length ? ` (${seg.dead.join('; ')})` : '';
+    b.block('arp_fail',
+      `${from.name} asked "who has ${ipStr(nextHop)}?" on ${portLabel(from, outPort)} and nobody answered${extra}. ` +
+      'Check that the next device has that IP on the port this cable reaches.');
+    return null;
+  }
+  // reconstruct the chain from the start to the target
+  const chain: number[] = [];
+  for (let i = target; i >= 0; i = seg.nodes[i]!.parent) chain.unshift(i);
+  const onPath = new Set(chain.map((i) => seg.nodes[i]!.cableId));
+  const anySwitch = chain.some((i) => ctx.s.devices[seg.nodes[i]!.devId]?.kind === 'switch');
+  const learning = ctx.s.unlocks.macLearning;
+  if (anySwitch && !learning) for (const c of seg.cables) if (!onPath.has(c)) b.p.floodCables.push(c);
+
+  lastHop.cableId = seg.nodes[chain[0]!]!.cableId;
+  for (let k = 0; k < chain.length; k++) {
+    const n = seg.nodes[chain[k]!]!;
+    const d = ctx.s.devices[n.devId]!;
+    b.p.resources.push(`cab:${n.cableId}`);
+    if (k === chain.length - 1) return { dev: d, inPort: n.inPort };
+    const next = seg.nodes[chain[k + 1]!]!;
+    // outPort of this L2 hop = port toward the next node
+    const out = otherEnd(ctx, next.cableId, d.id);
+    if (d.kind === 'switch') {
+      if (learning) {
+        const dst = ctx.s.devices[seg.nodes[target]!.devId];
+        const mac = dst ? macOf(dst, seg.nodes[target]!.inPort) : '';
+        if (mac) d.macTable[mac] = out;
+      }
+      b.p.resources.push(`dev:${d.id}`);
+      b.hop({
+        deviceId: d.id, inPort: n.inPort, outPort: out, cableId: next.cableId,
+        note: learning
+          ? `forwards the frame out ${portLabel(d, out)} only (MAC table)`
+          : `floods the frame out every port (no MAC learning yet), the copy on ${portLabel(d, out)} reaches the target`,
+      });
+    } else if (d.kind === 'ddos_scrubber') {
+      b.p.resources.push(`dev:${d.id}`);
+      const h = b.hop({ deviceId: d.id, inPort: n.inPort, outPort: out, cableId: next.cableId, note: 'inspects and passes the traffic' });
+      const verdict = scrub(d, pkt, b);
+      if (verdict) {
+        h.cableId = null;
+        h.note = verdict;
+        b.block('scrubbed', `${d.name} ${verdict}.`);
+        return null;
+      }
+    }
+  }
+  void how;
+  return null;
+}
+
+function otherEnd(ctx: NetCtx, cableId: CableId, devId: DeviceId): number {
+  const c = ctx.s.cables[cableId]!;
+  return c.a.deviceId === devId ? c.a.port : c.b.port;
+}
+
+function macOf(d: Device, port: number): string {
+  switch (d.kind) {
+    case 'server': return d.mac;
+    case 'desk': return d.mac;
+    case 'tower': return d.mac;
+    case 'badge': return d.mac;
+    case 'router': return d.interfaces.find((i) => i.port === port)?.mac ?? '';
+    case 'firewall': return d.interfaces.find((i) => i.port === port)?.mac ?? '';
+    case 'uplink': return '00:00:5e:00:01:01';
+    default: return '';
+  }
+}
+
+/** Returns a drop reason or null if the scrubber lets the packet through. */
+function scrub(d: DdosScrubberDevice, pkt: Pkt, b: PathBuilder): string | null {
+  if (pkt.dir === 'ret') return null;
+  if (d.synProtection && pkt.syn) return 'drops the half-open SYN flood (SYN cookies)';
+  for (let i = 0; i < d.rateLimits.length; i++) {
+    const rl = d.rateLimits[i]!;
+    if (!rl.enabled || !srcMatches(pkt, rl.src)) continue;
+    if (rl.action === 'drop') return `drops traffic from ${rl.src} (rule #${i + 1})`;
+    b.p.resources.push(`rl:${d.id}:${rl.id}`);
+    b.last()!.note = `rate-limits ${rl.src} to ${rl.maxMbps} Mbps (rule #${i + 1}, shared by everything that matches)`;
+    break;
+  }
+  if (d.autoMitigation && !pkt.srcAny && pkt.mbps > d.autoThresholdMbps) {
+    return `auto-mitigation drops a source sending ${pkt.mbps.toFixed(0)} Mbps (threshold ${d.autoThresholdMbps} Mbps)`;
+  }
+  return null;
+}
+
+// ─── Routing ────────────────────────────────────────────────────────────────
+
+export interface RouteHit { port: number; nextHop: number | null; desc: string; kind: 'connected' | 'static' | 'ospf' }
+
+const AD = { connected: 0, static: 1, ospf: 110 } as const;
+
+export function lookupRoute(ctx: NetCtx, d: L3Device, dst: number): RouteHit | null {
+  const ifs = l3Ifaces(ctx, d);
+  let best: { prefix: number; ad: number; metric: number; hit: RouteHit } | null = null;
+  const consider = (prefix: number, ad: number, metric: number, hit: RouteHit) => {
+    if (!best || prefix > best.prefix || (prefix === best.prefix && (ad < best.ad || (ad === best.ad && metric < best.metric)))) {
+      best = { prefix, ad, metric, hit };
+    }
+  };
+  for (const i of ifs) {
+    if (inCidr(dst, i.cidr)) consider(i.cidr.prefix, AD.connected, 0, { port: i.port, nextHop: null, kind: 'connected', desc: `${formatCidr(i.cidr)} is directly connected on ${i.name}` });
+  }
+  const viaStatic = (r: Route, kind: 'static' | 'ospf', ad: number, via?: string) => {
+    const c = parseCidr(r.dest);
+    const nh = parseIp(r.nextHop);
+    if (!c || nh === null || !inCidr(dst, c)) return;
+    const exit = ifs.find((i) => inCidr(nh, i.cidr));
+    if (!exit) return; // next hop not on a connected subnet: route is unusable
+    consider(c.prefix, ad, r.metric, {
+      port: exit.port, nextHop: nh, kind,
+      desc: `${kind === 'static' ? 'static route' : `OSPF route${via ? ` from ${via}` : ''}`} ${formatCidr(c)} via ${r.nextHop} out ${exit.name}`,
+    });
+  };
+  for (const r of d.routes) viaStatic(r, 'static', AD.static);
+  for (const r of ctx.learned[d.id] ?? []) viaStatic(r, 'ospf', AD.ospf, r.via);
+  return best ? (best as { hit: RouteHit }).hit : null;
+}
+
+// ─── Firewall ACL ───────────────────────────────────────────────────────────
+
+function aclEval(fw: FirewallDevice, inIf: FirewallInterface, outIf: FirewallInterface, pkt: Pkt, b: PathBuilder, devId: DeviceId) {
+  for (let i = 0; i < fw.rules.length; i++) {
+    const r = fw.rules[i]!;
+    if (r.srcZone !== 'any' && r.srcZone !== inIf.name) continue;
+    if (r.dstZone !== 'any' && r.dstZone !== outIf.name) continue;
+    if (r.protocol !== 'any' && r.protocol !== pkt.proto) continue;
+    if (!srcMatches(pkt, r.src)) continue;
+    if (!isAny(r.dst)) { const c = parseCidr(r.dst); if (!c || !inCidr(pkt.dst, c)) continue; }
+    if (r.protocol !== 'icmp' && pkt.proto !== 'icmp' && !isAny(r.ports)) {
+      const pr = parsePortRange(r.ports);
+      if (!pr || pkt.dport < pr[0] || pkt.dport > pr[1]) continue;
+    }
+    b.matches.push(`${devId}:${r.id}`);
+    return { allowed: r.action === 'allow', ruleId: r.id, desc: `ACL rule #${i + 1} ${r.action}s it` };
+  }
+  if (inIf.securityLevel > outIf.securityLevel) return { allowed: true, ruleId: null, desc: `no rule matched; ${inIf.name} (${inIf.securityLevel}) → ${outIf.name} (${outIf.securityLevel}) is high→low, allowed by default` };
+  return {
+    allowed: fw.defaultPolicy === 'allow', ruleId: null,
+    desc: `no rule matched; ${inIf.name} (${inIf.securityLevel}) → ${outIf.name} (${outIf.securityLevel}) needs an allow rule, default policy is ${fw.defaultPolicy}`,
+  };
+}
+
+function natFor(d: L3Device, pred: (n: NatEntry) => boolean): NatEntry | undefined {
+  return d.nat.find(pred);
+}
+
+// ─── Walk ───────────────────────────────────────────────────────────────────
+
+const MAX_L3_HOPS = 16;
+
+function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number, nextHop: number, pkt: Pkt): ResolvedPath {
+  let cur: Device = start;
+  let port = outPort;
+  let nh = nextHop;
+  for (let ttl = MAX_L3_HOPS; ttl > 0; ttl--) {
+    const arrived = l2Deliver(ctx, b, cur, port, nh, pkt);
+    if (!arrived) return b.done();
+    const d = arrived.dev;
+    const inPort = arrived.inPort;
+    switch (d.kind) {
+      case 'server':
+      case 'desk':
+      case 'tower':
+      case 'badge': {
+        const h = b.hop({ deviceId: d.id, inPort, outPort: null, note: '' });
+        b.p.resources.push(`dev:${d.id}`);
+        const primaryId = d.kind === 'server' ? ctx.standbyFor.get(d.id) : undefined;
+        const primary = primaryId ? ctx.s.devices[primaryId] : undefined;
+        const ownsDst = parseIp(d.ip) === pkt.dst || (d.kind === 'server' && d.extra.some((x) => parseIp(x.ip) === pkt.dst)) || (primary?.kind === 'server' && parseIp(primary.ip) === pkt.dst);
+        if (pkt.dir === 'ret' || !ownsDst) {
+          h.note = 'is not a router and drops traffic meant for someone else';
+          return b.block('not_for_me', `${d.name} received a packet for ${ipStr(pkt.dst)} but hosts do not forward traffic.`);
+        }
+        b.p.reachedServer = d.id;
+        const mgmt = pkt.proto === 'tcp' && pkt.dport === MGMT_PORT;
+        const snmp = pkt.proto === 'udp' && pkt.dport === SNMP_PORT;
+        const listens = mgmt || snmp || (d.kind === 'server' && d.roles.some((r) => ROLES[r.role].proto === pkt.proto && (ROLES[r.role].ports ?? [r.port]).includes(pkt.dport)));
+        if (!listens) {
+          h.note = `has nothing listening on ${pkt.proto}/${pkt.dport}`;
+          return b.block('port_closed', `${d.name} has no service on ${pkt.proto}/${pkt.dport}. Install the matching role on it.`);
+        }
+        const via = primary ? ` (standing in for ${primary.name} via failover)` : '';
+        const isProxy = d.kind === 'server' && d.roles.some((r) => r.role === 'proxy') && pkt.host && (pkt.dport === 80 || pkt.dport === 443);
+        h.note = mgmt ? `accepts the SSH management session${via}` : snmp ? 'answers the SNMP poll'
+          : isProxy ? `reverse proxy reads the requested name "${pkt.host}" and looks up its back end${via}`
+          : `accepts the connection on ${pkt.proto}/${pkt.dport}${via}`;
+        return b.ok(`Delivered to ${d.name}${via}.`);
+      }
+      case 'uplink': {
+        const h = b.hop({ deviceId: d.id, inPort, outPort: null, note: '' });
+        const block = parseCidr(d.publicSubnet);
+        if (pkt.dir === 'fwd' && b.p.hops[0]?.deviceId !== d.id) {
+          // traffic from inside heading to the internet (e.g. phone-tower subscribers)
+          if (block && inCidr(pkt.dst, block)) {
+            h.note = 'sends it back down: the destination is one of your own addresses';
+            return b.block('ttl', `Traffic for ${ipStr(pkt.dst)} came back to the ISP. Check your routes.`);
+          }
+          if (!block || !inCidr(pkt.src, block)) {
+            h.note = `drops it: source ${ipStr(pkt.src)} is not one of your public addresses`;
+            return b.block('bogon_src', `Traffic reached the ISP with private source ${ipStr(pkt.src)}. Add a static NAT entry for it on your edge device, or give it a public IP.`);
+          }
+          b.p.reachedServer = d.id;
+          b.p.resources.push(`dev:${d.id}`);
+          h.note = `carries it out to the internet from ${ipStr(pkt.src)} over your ${d.bandwidthMbps} Mbps line`;
+          return b.ok('Reaches the internet through your ISP uplink.');
+        }
+        if (pkt.dir === 'fwd') {
+          h.note = 'got its own traffic back';
+          return b.block('ttl', 'The request looped back to the ISP. Check your routes.');
+        }
+        if (!block || !inCidr(pkt.src, block)) {
+          h.note = `drops the reply: source ${ipStr(pkt.src)} is not one of your public addresses`;
+          return b.block('bogon_src', `The reply reached the ISP with source ${ipStr(pkt.src)}. The internet cannot answer a private address. Add a static NAT entry on your edge device, or give the server a public IP.`);
+        }
+        h.note = 'sends the reply out to the visitor';
+        return b.ok('Reply reaches the internet.');
+      }
+      case 'router':
+      case 'firewall': {
+        const h = b.hop({ deviceId: d.id, inPort, outPort: null, note: '' });
+        b.p.resources.push(`dev:${d.id}`);
+        const notes: string[] = [];
+        const inIf = d.kind === 'firewall' ? d.interfaces.find((i) => i.port === inPort) : undefined;
+        if (inIf) notes.push(`in on ${inIf.name}`);
+        // static NAT
+        if (pkt.dir === 'fwd') {
+          const n = natFor(d, (x) => parseIp(x.publicIp) === pkt.dst);
+          const priv = n ? parseIp(n.privateIp) : null;
+          if (n && priv !== null) { notes.push(`NAT ${n.publicIp} → ${n.privateIp}`); pkt = { ...pkt, dst: priv }; }
+          const sn = natFor(d, (x) => parseIp(x.privateIp) === pkt.src);
+          const spub = sn ? parseIp(sn.publicIp) : null;
+          if (sn && spub !== null) { notes.push(`NAT source ${sn.privateIp} → ${sn.publicIp}`); pkt = { ...pkt, src: spub }; }
+        } else {
+          const n = natFor(d, (x) => parseIp(x.privateIp) === pkt.src);
+          const pub = n ? parseIp(n.publicIp) : null;
+          if (n && pub !== null) { notes.push(`NAT source ${n.privateIp} → ${n.publicIp}`); pkt = { ...pkt, src: pub }; }
+        }
+        // is it for this box?
+        if (l3Ifaces(ctx, d).some((i) => i.ip === pkt.dst)) {
+          if (((pkt.proto === 'tcp' && pkt.dport === MGMT_PORT) || (pkt.proto === 'udp' && pkt.dport === SNMP_PORT)) && pkt.dir === 'fwd') {
+            h.note = [...notes, pkt.dport === SNMP_PORT ? 'answers the SNMP poll' : 'accepts the SSH management session'].join(' · ');
+            b.p.reachedServer = d.id;
+            return b.ok(`Delivered to ${d.name}.`);
+          }
+          h.note = [...notes, 'traffic is addressed to the device itself'].join(' · ');
+          return b.block('port_closed', `${d.name} owns ${ipStr(pkt.dst)} but runs no website. Add a static NAT entry that maps it to your server.`);
+        }
+        const rt = lookupRoute(ctx, d, pkt.dst);
+        if (!rt) {
+          h.note = [...notes, `no route to ${ipStr(pkt.dst)}`].join(' · ');
+          return b.block('no_route', `${d.name} has no route to ${ipStr(pkt.dst)}. Add a static route${pkt.dir === 'ret' ? ' (a default route 0.0.0.0/0 toward the internet)' : ''} or connect that subnet.`);
+        }
+        notes.push(rt.desc);
+        if (d.kind === 'firewall') {
+          const outIf = d.interfaces.find((i) => i.port === rt.port)!;
+          if (pkt.dir === 'fwd' && inIf) {
+            const v = aclEval(d, inIf, outIf, pkt, b, d.id);
+            notes.push(v.desc);
+            if (!v.allowed) {
+              h.note = notes.join(' · ');
+              return b.block('fw_deny', `${d.name} blocked ${pktDesc(pkt)}: ${v.desc}.`, v.ruleId);
+            }
+          } else if (pkt.dir === 'ret') {
+            notes.push('reply of an allowed connection, passed (stateful)');
+          }
+        }
+        h.outPort = rt.port;
+        h.note = notes.join(' · ');
+        cur = d;
+        port = rt.port;
+        nh = rt.nextHop ?? pkt.dst;
+        break;
+      }
+      default:
+        return b.block('link_down', 'Unexpected device.');
+    }
+  }
+  return b.block('ttl', 'The packet bounced between devices until its TTL ran out. Two routers probably point at each other.');
+}
+
+/** Inbound request from the internet toward a public IP. */
+export function resolveInbound(ctx: NetCtx, pkt: Pkt): ResolvedPath {
+  const b = new PathBuilder();
+  const up = Object.values(ctx.s.devices).find((d) => d.kind === 'uplink');
+  if (!up || up.kind !== 'uplink') return b.block('link_down', 'No uplink.');
+  const h = b.hop({ deviceId: up.id, inPort: null, outPort: 0, note: `ISP receives ${pktDesc(pkt)}` });
+  if (ctx.s.unlocks.upstreamFiltering) {
+    for (const f of up.upstreamFilters) {
+      if (f.enabled && !pkt.srcAny && srcMatches(pkt, f.src)) {
+        h.note = `ISP drops it upstream (filter ${f.src}), your pipe stays clear`;
+        h.outPort = null;
+        return b.block('upstream_filtered', `Dropped by the ISP before it reached your uplink (filter ${f.src}).`);
+      }
+    }
+  }
+  b.p.resources.push(`dev:${up.id}`);
+  const block = parseCidr(up.publicSubnet);
+  if (!block || !inCidr(pkt.dst, block)) return b.block('no_route', `${ipStr(pkt.dst)} is not in your public block.`);
+  h.note = `ISP sends ${pktDesc(pkt)} down your ${up.bandwidthMbps} Mbps line and asks who has ${ipStr(pkt.dst)}`;
+  return routeOnward(ctx, b, up, 0, pkt.dst, pkt);
+}
+
+/** Traffic that starts at a host (server or desk PC): replies, backups, management, lateral attacks. */
+export function resolveFromHost(ctx: NetCtx, host: Device, dst: number, proto: Pkt['proto'], dport: number, dir: Pkt['dir'], mbps = 0, srcIp?: number): ResolvedPath {
+  const b = new PathBuilder();
+  if (host.kind !== 'server' && host.kind !== 'desk' && host.kind !== 'tower' && host.kind !== 'badge') return b.block('no_ip', 'Not a host');
+  const pkt: Pkt = { src: srcIp ?? parseIp(host.ip) ?? 0, srcAny: false, dst, proto, sport: dir === 'ret' ? dport : 50000, dport: dir === 'ret' ? 50000 : dport, syn: false, mbps, dir };
+  const h = b.hop({ deviceId: host.id, inPort: null, outPort: 0, note: '' });
+  // loopback: a host talking to one of its own addresses never touches the wire
+  const mine = [host.ip, ...(host.kind === 'server' ? host.extra.map((x) => x.ip) : [])].map((x) => parseIp(x)).filter((x): x is number => x !== null);
+  if (dir === 'fwd' && mine.includes(dst)) {
+    const listens = (proto === 'tcp' && dport === MGMT_PORT) || (host.kind === 'server' && host.roles.some((r) => ROLES[r.role].proto === proto && (ROLES[r.role].ports ?? [r.port]).includes(dport)));
+    if (!listens) { h.note = `has nothing listening on ${proto}/${dport} locally`; return b.block('port_closed', `${host.name} has no role on ${proto}/${dport}.`); }
+    h.note = `talks to itself on ${proto}/${dport} (same server, no network needed)`;
+    b.p.reachedServer = host.id;
+    return b.ok(`Handled locally on ${host.name}.`);
+  }
+  const what = dir === 'ret' ? 'the reply' : `${proto}/${dport} to ${ipStr(dst)}`;
+  // an extra interface (server eth1…eth3) on the destination's subnet wins
+  const own0 = subnetOf(host.ip, host.mask);
+  if (host.kind === 'server' && !(own0 && inCidr(dst, own0))) {
+    for (let i = 0; i < host.extra.length; i++) {
+      const x = host.extra[i]!;
+      const side = subnetOf(x.ip, x.mask);
+      if (!side || !inCidr(dst, side) || parseIp(x.ip) === null) continue;
+      if (host.health.state === 'failed') return b.block('device_failed', `${host.name} is down.`);
+      h.outPort = i + 1;
+      h.note = `sends ${what} out eth${i + 1} on its back-end network ${formatCidr(side)}`;
+      return routeOnward(ctx, b, host, i + 1, dst, srcIp === undefined ? { ...pkt, src: parseIp(x.ip)! } : pkt);
+    }
+  }
+  const own = own0;
+  if (parseIp(host.ip) === null || !own) {
+    h.note = 'has no IP address';
+    return b.block('no_ip', `${host.name} has no valid IP and mask on eth0.`);
+  }
+  if (host.health.state === 'failed') return b.block('device_failed', `${host.name} is down.`);
+  let nh: number;
+  if (inCidr(dst, own)) {
+    nh = dst;
+    h.note = `sends ${what} directly: it is on its own subnet`;
+  } else {
+    const gw = parseIp(host.gateway);
+    if (gw === null) {
+      h.note = 'has no default gateway';
+      return b.block('no_gateway', `${host.name} has no default gateway, so it cannot reach ${ipStr(dst)} outside ${formatCidr(own)}.`);
+    }
+    if (!inCidr(gw, own)) {
+      h.note = `gateway ${host.gateway} is outside its subnet`;
+      return b.block('no_gateway', `${host.name}'s gateway ${host.gateway} is not on ${formatCidr(own)}, so it cannot be reached.`);
+    }
+    nh = gw;
+    h.note = `sends ${what} to its gateway ${host.gateway}`;
+  }
+  return routeOnward(ctx, b, host, 0, nh, pkt);
+}
+
+/** Reply from a server back to the visitor. */
+export function resolveReply(ctx: NetCtx, server: Device, visitor: number, sport: number): ResolvedPath {
+  const primary = ctx.standbyFor.get(server.id);
+  const pd = primary ? ctx.s.devices[primary] : undefined;
+  const vip = pd?.kind === 'server' ? parseIp(pd.ip) ?? undefined : undefined;
+  return resolveFromHost(ctx, server, visitor, 'tcp', sport, 'ret', 0, vip);
+}
+
+/** Representative visitor address used for the reply check. */
+export const VISITOR_IP = parseIp('198.51.100.77')!;
+
+export function packetFor(flow: Flow): Pkt {
+  const c = parseCidr(flow.srcCidr);
+  const any = !c || c.prefix === 0;
+  return {
+    src: any ? VISITOR_IP : ((c!.net + 37) >>> 0),
+    srcAny: any,
+    dst: parseIp(flow.dstIp) ?? 0,
+    proto: flow.protocol,
+    sport: flow.srcPort,
+    dport: flow.dstPort,
+    syn: flow.syn,
+    mbps: flow.rateMbps,
+    dir: 'fwd',
+    host: flow.host,
+  };
+}
+
+export function resolveFlow(ctx: NetCtx, flow: Flow): ResolvedPath {
+  if (flow.origin !== 'external') {
+    const host = ctx.s.devices[flow.origin];
+    if (!host) { const b = new PathBuilder(); return b.block('link_down', 'Source is gone.'); }
+    return resolveFromHost(ctx, host, parseIp(flow.dstIp) ?? 0, flow.protocol, flow.dstPort, 'fwd', flow.rateMbps);
+  }
+  const pkt = packetFor(flow);
+  const p = resolveInbound(ctx, pkt);
+  if (flow.kind === 'http' && !p.blocked && p.reachedServer) {
+    const srv = ctx.s.devices[p.reachedServer]!;
+    p.ret = resolveReply(ctx, srv, pkt.src, flow.dstPort);
+    if (p.ret.blocked) p.explain = `Request arrives, but the reply fails: ${p.ret.explain}`;
+  }
+  return p;
+}
+
+// ─── Topology services: DHCP and OSPF ───────────────────────────────────────
+
+const maskText = (prefix: number) => ipStr(prefixToMask(prefix));
+
+/** Give DHCP servers' clients an address. Mutates server ip/mask/gateway. */
+export function runDhcp(ctx: NetCtx): void {
+  const s = ctx.s;
+  const leases = new Map<string, number>(); // iface key → next offset
+  const servers = Object.values(s.devices).filter((d) => d.kind === 'server' || d.kind === 'desk' || d.kind === 'tower' || d.kind === 'badge').sort((a, b) => a.id.localeCompare(b.id));
+  for (const srv of servers) {
+    if ((srv.kind !== 'server' && srv.kind !== 'desk' && srv.kind !== 'tower' && srv.kind !== 'badge') || srv.addressing !== 'dhcp') continue;
+    let leased = false;
+    if (s.unlocks.dhcp && devUp(srv) && srv.ports[0]?.up) {
+      const seg = walkSegment(ctx, srv.id, 0);
+      for (const i of seg.endpoints) {
+        const n = seg.nodes[i]!;
+        const d = s.devices[n.devId];
+        if (!d || (d.kind !== 'router' && d.kind !== 'firewall')) continue;
+        const itf = (d.interfaces as { port: number; ip: string; mask: string; dhcp: { enabled: boolean } }[]).find((x) => x.port === n.inPort);
+        const net = itf ? subnetOf(itf.ip, itf.mask) : null;
+        if (!itf || !itf.dhcp?.enabled || !net) continue;
+        const key = `${d.id}:${n.inPort}`;
+        const off = leases.get(key) ?? 100;
+        leases.set(key, off + 1);
+        srv.ip = ipStr((net.net + off) >>> 0);
+        srv.mask = maskText(net.prefix);
+        srv.gateway = itf.ip.trim();
+        leased = true;
+        break;
+      }
+    }
+    if (!leased) { srv.ip = ''; srv.gateway = ''; }
+  }
+}
+
+/** Distance-vector stand-in for OSPF: share connected networks and static routes. */
+export function runOspf(ctx: NetCtx): void {
+  const s = ctx.s;
+  for (const k of Object.keys(ctx.learned)) delete ctx.learned[k];
+  if (!s.unlocks.dynamicRouting) return;
+  const speakers = Object.values(s.devices).filter((d): d is L3Device => (d.kind === 'router' || d.kind === 'firewall') && d.ospf && devUp(d));
+  if (speakers.length < 2) return;
+  // adjacencies: A sees B on a shared subnet in the same broadcast domain
+  const adj = new Map<DeviceId, { peer: L3Device; peerIp: string }[]>();
+  for (const a of speakers) {
+    const list: { peer: L3Device; peerIp: string }[] = [];
+    for (const ai of l3Ifaces(ctx, a)) {
+      const seg = walkSegment(ctx, a.id, ai.port);
+      for (const i of seg.endpoints) {
+        const n = seg.nodes[i]!;
+        const peer = speakers.find((x) => x.id === n.devId);
+        if (!peer) continue;
+        const pi = l3Ifaces(ctx, peer).find((x) => x.port === n.inPort && inCidr(x.ip, ai.cidr));
+        if (pi) list.push({ peer, peerIp: pi.ipText });
+      }
+    }
+    adj.set(a.id, list);
+  }
+  type Entry = { dest: string; metric: number; nextHop: string; via: string; origin: DeviceId };
+  const tables = new Map<DeviceId, Map<string, Entry>>();
+  const own = new Map<DeviceId, Set<string>>();
+  for (const d of speakers) {
+    const t = new Map<string, Entry>();
+    const mine = new Set<string>();
+    for (const i of l3Ifaces(ctx, d)) { const k = formatCidr(i.cidr); mine.add(k); t.set(k, { dest: k, metric: 0, nextHop: '', via: '', origin: d.id }); }
+    for (const r of d.routes) { const c = parseCidr(r.dest); if (c) { const k = formatCidr(c); mine.add(k); if (!t.has(k)) t.set(k, { dest: k, metric: 1, nextHop: '', via: '', origin: d.id }); } }
+    tables.set(d.id, t);
+    own.set(d.id, mine);
+  }
+  for (let iter = 0; iter < speakers.length + 1; iter++) {
+    let changed = false;
+    for (const a of speakers) {
+      const ta = tables.get(a.id)!;
+      for (const { peer, peerIp } of adj.get(a.id) ?? []) {
+        for (const e of tables.get(peer.id)!.values()) {
+          if (own.get(a.id)!.has(e.dest)) continue;
+          if (e.origin === a.id) continue;            // split horizon
+          if (e.nextHop && e.via === a.name) continue;
+          const m = e.metric + 1;
+          const cur = ta.get(e.dest);
+          if (!cur || m < cur.metric) { ta.set(e.dest, { dest: e.dest, metric: m, nextHop: peerIp, via: peer.name, origin: e.origin }); changed = true; }
+        }
+      }
+    }
+    if (!changed) break;
+  }
+  for (const d of speakers) {
+    ctx.learned[d.id] = [...tables.get(d.id)!.values()]
+      .filter((e) => e.nextHop)
+      .map((e, i) => ({ id: `ospf_${i}`, dest: e.dest, nextHop: e.nextHop, metric: e.metric, via: e.via }));
+  }
+}
+
+export const REASON_LABEL: Record<BlockReason, string> = {
+  link_down: 'link down',
+  device_failed: 'device failed',
+  arp_fail: 'nobody answered ARP',
+  no_route: 'no route',
+  no_ip: 'no IP',
+  no_gateway: 'no gateway',
+  fw_deny: 'denied by firewall',
+  scrubbed: 'scrubbed',
+  port_closed: 'port closed',
+  ttl: 'routing loop',
+  bogon_src: 'private source',
+  upstream_filtered: 'dropped upstream',
+  not_for_me: 'not a router',
+  storm: 'broadcast storm',
+};
+
+// ─── Spanning tree ──────────────────────────────────────────────────────────
+
+/**
+ * RSTP stand-in. Switches joined in a loop elect the lowest bridge id as root
+ * and block every redundant switch-to-switch link. When an active link dies the
+ * next topology pass picks a blocked one instead (failover). If any switch in a
+ * loop runs without STP, frames circle forever: a broadcast storm.
+ */
+export function runStp(s: WorldState, cache: RuntimeCache): { blocked: Record<CableId, DeviceId>; storm: Record<DeviceId, true> } {
+  const blocked: Record<CableId, DeviceId> = {};
+  const storm: Record<DeviceId, true> = {};
+  const sw = Object.values(s.devices).filter((d) => d.kind === 'switch' && devUp(d));
+  const isSw = new Set(sw.map((d) => d.id));
+  const edges: { id: CableId; a: DeviceId; b: DeviceId }[] = [];
+  for (const c of Object.values(s.cables)) {
+    if (!isSw.has(c.a.deviceId) || !isSw.has(c.b.deviceId) || c.a.deviceId === c.b.deviceId) continue;
+    if (!s.devices[c.a.deviceId]!.ports[c.a.port]?.up || !s.devices[c.b.deviceId]!.ports[c.b.port]?.up) continue;
+    edges.push({ id: c.id, a: c.a.deviceId, b: c.b.deviceId });
+  }
+  const adj = new Map<DeviceId, { id: CableId; to: DeviceId }[]>();
+  for (const e of edges) {
+    (adj.get(e.a) ?? adj.set(e.a, []).get(e.a)!).push({ id: e.id, to: e.b });
+    (adj.get(e.b) ?? adj.set(e.b, []).get(e.b)!).push({ id: e.id, to: e.a });
+  }
+  const seen = new Set<DeviceId>();
+  for (const start of [...isSw].sort()) {
+    if (seen.has(start)) continue;
+    const comp: DeviceId[] = [];
+    const q = [start];
+    seen.add(start);
+    while (q.length) { const x = q.shift()!; comp.push(x); for (const n of adj.get(x) ?? []) if (!seen.has(n.to)) { seen.add(n.to); q.push(n.to); } }
+    const compEdges = new Set(edges.filter((e) => comp.includes(e.a)).map((e) => e.id));
+    if (compEdges.size < comp.length) continue; // a tree already, no loop
+    if (comp.some((id) => { const d = s.devices[id]; return d?.kind === 'switch' && !d.stp; })) {
+      for (const id of comp) storm[id] = true;
+      continue;
+    }
+    const root = [...comp].sort()[0]!;
+    const tree = new Set<CableId>();
+    const vis = new Set([root]);
+    const bq = [root];
+    while (bq.length) {
+      const x = bq.shift()!;
+      for (const n of (adj.get(x) ?? []).sort((m, k) => m.id.localeCompare(k.id))) {
+        if (vis.has(n.to)) continue;
+        vis.add(n.to);
+        tree.add(n.id);
+        bq.push(n.to);
+      }
+    }
+    for (const id of compEdges) if (!tree.has(id)) { const e = edges.find((x) => x.id === id)!; blocked[id] = e.b > e.a ? e.b : e.a; }
+  }
+  void cache;
+  return { blocked, storm };
+}

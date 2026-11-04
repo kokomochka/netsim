@@ -1,0 +1,5 @@
+node_modules/
+test/*.cjs
+test/*.png
+test/save-roundtrip.json
+*.png
