@@ -102,7 +102,7 @@ export class Renderer {
     host.appendChild(this.app.canvas);
     this.app.canvas.style.touchAction = 'none';
     this.app.stage.addChild(this.grid, this.worldLayer);
-    this.worldLayer.addChild(this.floorG, this.roomTint, this.doorG, this.cables, this.devices, this.ports, this.carriers, this.healthBadges, this.people, this.peopleLabels, this.roomLabels, this.overlay, this.ghost);
+    this.worldLayer.addChild(this.floorG, this.roomTint, this.doorG, this.cables, this.carriers, this.devices, this.ports, this.healthBadges, this.people, this.peopleLabels, this.roomLabels, this.overlay, this.ghost);
     this.ghost.addChild(this.ghostIcon, this.ghostMark);
     this.ghost.alpha = 0.55;
     this.ghost.visible = false;
