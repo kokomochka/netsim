@@ -1252,10 +1252,15 @@ function stats(state: WorldState, cache: RuntimeCache): void {
   // a switch with ≥3 hosts that is carrying a working site's traffic
   const busy = new Set<DeviceId>();
   for (const svc of svcs) {
-    if (svc.availability < 0.5 || !svc.flowId) continue;
-    for (const h of cache.paths[svc.flowId]?.hops ?? []) {
-      const d = state.devices[h.deviceId];
-      if (d?.kind === 'switch') busy.add(d.id);
+    if (svc.availability < 0.5) continue;
+    // any working entry point of the site counts, not only the first public address
+    for (const id of svc.flowIds ?? []) {
+      const p = cache.paths[id];
+      if (!p || p.blocked) continue;
+      for (const h of p.hops) {
+        const d = state.devices[h.deviceId];
+        if (d?.kind === 'switch') busy.add(d.id);
+      }
     }
   }
   for (const id of busy) {
