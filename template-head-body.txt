@@ -1,5 +1,5 @@
 <title>NetSim</title>
-<style>:root{color-scheme:light}</style>
+<style>:root{color-scheme:light dark}</style>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" />
@@ -31,9 +31,64 @@
     --shadow-sm: 0 1px 2px rgb(42 53 71 / .06), 0 1px 3px rgb(42 53 71 / .08);
     --shadow: 0 6px 24px rgb(42 53 71 / .10), 0 1px 3px rgb(42 53 71 / .06);
     --shadow-lg: 0 20px 48px rgb(42 53 71 / .16), 0 2px 6px rgb(42 53 71 / .06);
+    --stage-bg: #e9eff5;
     --font-display: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
     --font-body: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --accent-soft: rgb(59 156 240 / .16);
+    --canvas: #121822;
+    --paper: #1c2330;
+    --well: #161d29;
+    --well-soft: #19202c;
+    --raised: #1c2330;
+    --raised-hover: #242d3d;
+    --line: #2a3445;
+    --line-strong: #3a4659;
+    --ink: #e6ebf2;
+    --ink-dim: #a3afc2;
+    --ink-faint: #778399;
+    --accent: #3b9cf0;
+    --accent-strong: #5aacf3;
+    --ok: #2bd49a;
+    --ok-soft: rgb(43 212 154 / .14);
+    --warn: #f5b423;
+    --warn-soft: rgb(245 180 35 / .14);
+    --bad: #f2626a;
+    --bad-soft: rgb(242 98 106 / .15);
+    --stage-bg: #141a24;
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / .3), 0 1px 3px rgb(0 0 0 / .25);
+    --shadow: 0 6px 24px rgb(0 0 0 / .35);
+    --shadow-lg: 0 20px 48px rgb(0 0 0 / .5), 0 2px 6px rgb(0 0 0 / .3);
+  } }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --accent-soft: rgb(59 156 240 / .16);
+    --canvas: #121822;
+    --paper: #1c2330;
+    --well: #161d29;
+    --well-soft: #19202c;
+    --raised: #1c2330;
+    --raised-hover: #242d3d;
+    --line: #2a3445;
+    --line-strong: #3a4659;
+    --ink: #e6ebf2;
+    --ink-dim: #a3afc2;
+    --ink-faint: #778399;
+    --accent: #3b9cf0;
+    --accent-strong: #5aacf3;
+    --ok: #2bd49a;
+    --ok-soft: rgb(43 212 154 / .14);
+    --warn: #f5b423;
+    --warn-soft: rgb(245 180 35 / .14);
+    --bad: #f2626a;
+    --bad-soft: rgb(242 98 106 / .15);
+    --stage-bg: #141a24;
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / .3), 0 1px 3px rgb(0 0 0 / .25);
+    --shadow: 0 6px 24px rgb(0 0 0 / .35);
+    --shadow-lg: 0 20px 48px rgb(0 0 0 / .5), 0 2px 6px rgb(0 0 0 / .3);
   }
   html { height: 100%; box-sizing: border-box; background: var(--canvas); }
   body {
@@ -47,7 +102,7 @@
   }
   ns-topbar { grid-area: top; }
   ns-palette { grid-area: pal; }
-  #stage { grid-area: stage; position: relative; overflow: hidden; min-width: 0; min-height: 0; margin: 0 14px 14px 0; border-radius: var(--radius); box-shadow: var(--shadow-sm); background: #e9eff5; }
+  #stage { grid-area: stage; position: relative; overflow: hidden; min-width: 0; min-height: 0; margin: 0 14px 14px 0; border-radius: var(--radius); box-shadow: var(--shadow-sm); background: var(--stage-bg); }
   @media (max-width: 759px) { #stage { margin: 0; border-radius: 0; box-shadow: none; } }
   #stage canvas { display: block; }
   #boot {

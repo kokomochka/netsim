@@ -7,7 +7,7 @@ import { assertNever, type Cable, type Device, type Vec2 } from '../state/types'
 import { pointer, runtime, ui, world, deviceAtCell } from '../state/world';
 import { doorStates, smartDoorsLocked } from '../sim/staff';
 import { inParking, isIndoor, isPath, placementError, tileAt } from '../state/floor';
-import { deviceContext } from './icons';
+import { clearIconCache, deviceContext } from './icons';
 import { CABLE_COLOR, COLORS, KIND_COLOR } from './palette';
 
 interface DeviceView {
@@ -108,6 +108,21 @@ export class Renderer {
       for (const v of this.views.values()) { v.name.text = ''; v.sub.text = ''; }
       this.redrawWorld();
     }).catch(() => {});
+  }
+
+  /** Rebuild everything that baked in palette colours, after applyCanvasTheme(). */
+  retheme(): void {
+    clearIconCache();
+    for (const v of this.views.values()) v.root.destroy({ children: true });
+    this.views.clear();
+    for (const t of this.labelViews.values()) t.destroy();
+    this.labelViews.clear();
+    for (const t of this.roomLabelViews.values()) t.destroy();
+    this.roomLabelViews.clear();
+    this.floorKey = '';
+    this.app.renderer.background.color = COLORS.background;
+    this.applyCamera();
+    this.redrawWorld();
   }
 
   /** Put the pre-placed uplink a little left of centre at 100 % zoom. */
@@ -233,7 +248,7 @@ export class Renderer {
           const h = hash(x, Math.round(row * 10));
           if (h % 100 < 55) {
             const c = carColors[h % carColors.length]!;
-            g.roundRect(sx + 9, top + 6, CELL - 18, CELL * 1.2 - 12, 7).fill({ color: 0x2a3547, alpha: 0.12 });
+            g.roundRect(sx + 9, top + 6, CELL - 18, CELL * 1.2 - 12, 7).fill({ color: COLORS.carShadow, alpha: 0.12 });
             g.roundRect(sx + 7, top + 4, CELL - 18, CELL * 1.2 - 12, 7).fill({ color: c });
             g.roundRect(sx + 11, top + 14, CELL - 26, 12, 3).fill({ color: 0x3b4a63, alpha: 0.55 });
             g.roundRect(sx + 11, top + CELL * 1.2 - 26, CELL - 26, 8, 3).fill({ color: 0x3b4a63, alpha: 0.45 });
@@ -255,7 +270,7 @@ export class Renderer {
     };
     const W = f.w * CELL, H = f.h * CELL;
     fence(0, 0, W, 0); fence(W, 0, W, H); fence(W, H, 0, H); fence(0, H, 0, 0);
-    g.stroke({ width: 2, color: 0x8f9bb0, alpha: 0.6 });
+    g.stroke({ width: 2, color: COLORS.fence, alpha: 0.6 });
     const locked = smartDoorsLocked(s);
     this.lastDoorState = locked;
     const tiles = Object.entries(f.tiles).map(([k, t]) => { const [x, y] = k.split(',').map(Number); return { x: x!, y: y!, t }; });
@@ -289,7 +304,7 @@ export class Renderer {
       if (t !== 'vent') continue;
       const px = x * CELL, py = y * CELL;
       const horiz = isWallish(x - 1, y) || isWallish(x + 1, y);
-      g.roundRect(px + 8, py + 8, CELL - 16, CELL - 16, 4).fill({ color: 0xffffff }).stroke({ width: 2, color: KIND_COLOR.ac });
+      g.roundRect(px + 8, py + 8, CELL - 16, CELL - 16, 4).fill({ color: COLORS.ventFill }).stroke({ width: 2, color: KIND_COLOR.ac });
       for (let i = 0; i < 4; i++) {
         if (horiz) g.moveTo(px + 13 + i * 7, py + 12).lineTo(px + 13 + i * 7, py + CELL - 12);
         else g.moveTo(px + 12, py + 13 + i * 7).lineTo(px + CELL - 12, py + 13 + i * 7);
@@ -352,7 +367,7 @@ export class Renderer {
       const t = s.climate.rooms[r.key] ?? s.climate.outside;
       const hot = Math.max(0, Math.min(1, (t - 26) / 30));
       const cold = Math.max(0, Math.min(1, (20 - t) / 8));
-      const color = hot > 0 ? mix(0xffb347, 0xff3b30, Math.max(0, (t - 40) / 20)) : 0x1e88e5;
+      const color = hot > 0 ? mix(0xffb347, 0xff3b30, Math.max(0, (t - 40) / 20)) : COLORS.coldTint;
       const alpha = hot > 0 ? 0.08 + hot * 0.3 : cold * 0.15;
       let mx = Infinity, my = Infinity;
       if (alpha > 0.01) for (const c of r.cells) {
@@ -399,7 +414,7 @@ export class Renderer {
         .fill({ color: COLORS.sight, alpha: 0.045 }).stroke({ width: 1, color: COLORS.sight, alpha: 0.16 });
       const seated = e.state === 'seated';
       const oy = seated ? 15 : 0;
-      g.ellipse(x, y + oy + 2, 8, 5).fill({ color: 0x2a3547, alpha: 0.14 });
+      g.ellipse(x, y + oy + 2, 8, 5).fill({ color: COLORS.carShadow, alpha: 0.14 });
       g.circle(x, y + oy, 7).fill({ color: COLORS.engineer }).stroke({ width: 1.5, color: COLORS.engineerDark });
       g.circle(x, y + oy - 1, 3.4).fill({ color: 0xf1d3b3 });
       const job = e.jobId ? s.staff.jobs[e.jobId] : undefined;
@@ -424,7 +439,7 @@ export class Renderer {
     }
     for (const t of Object.values(s.staff.trespassers)) {
       const x = t.x * CELL, y = t.y * CELL;
-      g.ellipse(x, y + 2, 8, 5).fill({ color: 0x2a3547, alpha: 0.18 });
+      g.ellipse(x, y + 2, 8, 5).fill({ color: COLORS.carShadow, alpha: 0.18 });
       g.circle(x, y, 7).fill({ color: COLORS.stranger }).stroke({ width: 2, color: COLORS.strangerRim });
       g.circle(x, y - 1, 3).fill({ color: 0x55555e });
       if (t.state === 'hacking') {
@@ -483,7 +498,7 @@ export class Renderer {
         v.sub.text = sl;
         const w = Math.max(v.name.width, v.sub.width) + 8;
         v.plate.clear();
-        v.plate.roundRect(-w / 2, BODY / 2 + 2, w, 28, 6).fill({ color: COLORS.plate, alpha: 0.94 }).stroke({ width: 1, color: 0xe5eaef });
+        v.plate.roundRect(-w / 2, BODY / 2 + 2, w, 28, 6).fill({ color: COLORS.plate, alpha: 0.94 }).stroke({ width: 1, color: COLORS.plateLine });
       }
     }
     for (const [id, v] of this.views) {
@@ -698,8 +713,8 @@ export class Renderer {
       pos = this.alongCable(cable, hop!.deviceId, c.progress);
       if (!pos) continue;
       const color = c.kind === 'attack' ? COLORS.carrierAttack : c.kind === 'probe' ? COLORS.healthWarn
-        : c.kind === 'control' ? 0x13a882 : c.kind === 'backup' ? 0xe09a00 : c.kind === 'backend' || c.kind === 'proxied' ? 0x7460ee
-        : c.kind === 'transit' ? 0x03a9c7 : COLORS.carrierNormal;
+        : c.kind === 'control' ? COLORS.carrierControl : c.kind === 'backup' ? COLORS.carrierBackup : c.kind === 'backend' || c.kind === 'proxied' ? COLORS.carrierBackend
+        : c.kind === 'transit' ? COLORS.carrierTransit : COLORS.carrierNormal;
       cg.circle(pos.x, pos.y, c.size).fill({ color, alpha: 0.9 });
     }
 

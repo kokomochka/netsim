@@ -288,6 +288,22 @@ export function importJson(text: string): WorldState | null {
   }
 }
 
+/** Older saves listed several reverse-proxy back ends in one rule, comma-separated.
+ *  Each back end is now its own rule; rules sharing a name balance and fail over. */
+export function splitProxyRules(state: WorldState): void {
+  for (const d of Object.values(state.devices)) {
+    if (d.kind !== 'server') continue;
+    for (const r of d.roles) {
+      if (r.role !== 'proxy' || !r.rules) continue;
+      r.rules = r.rules.flatMap((rule) => {
+        const parts = rule.backend.split(/[\s,]+/).filter(Boolean);
+        if (parts.length <= 1) return [rule];
+        return parts.map((b, i) => ({ id: i === 0 ? rule.id : `${rule.id}_${i}`, fqdn: rule.fqdn, backend: b }));
+      });
+    }
+  }
+}
+
 export function serialize(state: WorldState): string {
   return JSON.stringify({ ...state, meta: { ...state.meta, saveTimestamp: Date.now() } });
 }
@@ -313,6 +329,7 @@ export function deserialize(json: string): WorldState | null {
     }
     state.cables ??= {} as any;
     state.camera ??= { x: 0, y: 0, scale: 1 };
+    splitProxyRules(state);
     recomputeAllPaths(state);
     resetRuntime();
     return state;

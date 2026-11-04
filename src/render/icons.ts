@@ -107,6 +107,11 @@ function drawGlyph(ctx: GraphicsContext, kind: DeviceKind): void {
   }
 }
 
+/** Forget cached icons so the next lookup uses the current palette. */
+export function clearIconCache(): void {
+  cache.clear();
+}
+
 export function deviceContext(kind: DeviceKind): GraphicsContext {
   let ctx = cache.get(kind);
   if (!ctx) {

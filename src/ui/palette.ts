@@ -3,14 +3,15 @@ import { ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TILE_PRICE } from '../balance';
 import { DEVICE_DEFS, NETWORK_KINDS } from '../state/devices';
 import type { CableType, Tile } from '../state/types';
 import { setTool, ui } from '../state/world';
-import { CABLE_COLOR } from '../render/palette';
+import { CABLE_COLOR, COLORS, KIND_COLOR } from '../render/palette';
+import { onThemeChange } from './theme';
 import { cableGlyph, hex, kindGlyph, selectGlyph } from './glyphs';
 import { baseStyle } from './styles';
 
-const CABLE_TYPES: { type: CableType; label: string; color: string }[] = [
-  { type: 'ethernet', label: 'Ethernet', color: hex(CABLE_COLOR.ethernet) },
-  { type: 'fibre', label: 'Fibre', color: hex(CABLE_COLOR.fibre) },
-  { type: 'crossover', label: 'Crossover', color: hex(CABLE_COLOR.crossover) },
+const CABLE_TYPES: { type: CableType; label: string }[] = [
+  { type: 'ethernet', label: 'Ethernet' },
+  { type: 'fibre', label: 'Fibre' },
+  { type: 'crossover', label: 'Crossover' },
 ];
 
 const BUILD_TOOLS: { tile: Tile; label: string; title: string }[] = [
@@ -23,18 +24,23 @@ const BUILD_TOOLS: { tile: Tile; label: string; title: string }[] = [
   { tile: 'ground', label: 'Clear', title: 'Clear a tile back to open ground.' },
 ];
 
-const TILE_SVG: Record<Tile, string> = {
-  floor: '<rect x="-12" y="-12" width="24" height="24" rx="2" fill="#f3f6fa" stroke="#b6c1cf" stroke-width="1.5"/><path d="M-12 0H12M0 -12V12" stroke="#d3dbe5" stroke-width="1"/>',
-  raised: '<rect x="-12" y="-12" width="24" height="24" rx="2" fill="#e1e8f0" stroke="#94a3b8" stroke-width="1.5"/><g fill="#94a3b8"><circle cx="-6" cy="-6" r="1.3"/><circle cx="6" cy="-6" r="1.3"/><circle cx="-6" cy="6" r="1.3"/><circle cx="6" cy="6" r="1.3"/></g>',
-  wall: '<rect x="-13" y="-5" width="26" height="10" fill="#5d6b82"/><rect x="-5" y="-13" width="10" height="26" fill="#5d6b82"/>',
-  door: '<rect x="-13" y="-4" width="5" height="8" fill="#5d6b82"/><rect x="8" y="-4" width="5" height="8" fill="#5d6b82"/><path d="M-8 0V-14" stroke="#b7834d" stroke-width="2.5"/><path d="M-8 -14A14 14 0 0 1 6 0" fill="none" stroke="#b7834d" stroke-width="1"/>',
-  smartdoor: '<rect x="-13" y="-4" width="5" height="8" fill="#5d6b82"/><rect x="8" y="-4" width="5" height="8" fill="#5d6b82"/><path d="M-8 0V-14" stroke="#13a882" stroke-width="2.5"/><path d="M-8 -14A14 14 0 0 1 6 0" fill="none" stroke="#13a882" stroke-width="1"/><circle cx="0" cy="6" r="3" fill="#13a882"/>',
-  ground: '<rect x="-12" y="-12" width="24" height="24" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 3"/><path d="M-6 -6L6 6M6 -6L-6 6" stroke="currentColor" stroke-width="1.8"/>',
-  vent: '<rect x="-13" y="-5" width="26" height="10" fill="#5d6b82"/><rect x="-9" y="-9" width="18" height="18" rx="3" fill="#ffffff" stroke="#03a9c7" stroke-width="1.8"/><path d="M-5 -6V6M-1.5 -6V6M2 -6V6M5.5 -6V6" stroke="#03a9c7" stroke-width="1.3"/>',
-};
+function tileSvg(t: Tile): string {
+  const C = COLORS;
+  const floor = hex(C.floor), seam = hex(C.floorSeam), raised = hex(C.raised), dot = hex(C.raisedDot), edge = hex(C.portRing);
+  const wall = hex(C.wall), door = hex(C.door), ok = hex(C.healthOk), ac = hex(KIND_COLOR.ac), vent = hex(C.ventFill);
+  switch (t) {
+    case 'floor': return `<rect x="-12" y="-12" width="24" height="24" rx="2" fill="${floor}" stroke="${edge}" stroke-width="1.5"/><path d="M-12 0H12M0 -12V12" stroke="${seam}" stroke-width="1"/>`;
+    case 'raised': return `<rect x="-12" y="-12" width="24" height="24" rx="2" fill="${raised}" stroke="${dot}" stroke-width="1.5"/><g fill="${dot}"><circle cx="-6" cy="-6" r="1.3"/><circle cx="6" cy="-6" r="1.3"/><circle cx="-6" cy="6" r="1.3"/><circle cx="6" cy="6" r="1.3"/></g>`;
+    case 'wall': return `<rect x="-13" y="-5" width="26" height="10" fill="${wall}"/><rect x="-5" y="-13" width="10" height="26" fill="${wall}"/>`;
+    case 'door': return `<rect x="-13" y="-4" width="5" height="8" fill="${wall}"/><rect x="8" y="-4" width="5" height="8" fill="${wall}"/><path d="M-8 0V-14" stroke="${door}" stroke-width="2.5"/><path d="M-8 -14A14 14 0 0 1 6 0" fill="none" stroke="${door}" stroke-width="1"/>`;
+    case 'smartdoor': return `<rect x="-13" y="-4" width="5" height="8" fill="${wall}"/><rect x="8" y="-4" width="5" height="8" fill="${wall}"/><path d="M-8 0V-14" stroke="${ok}" stroke-width="2.5"/><path d="M-8 -14A14 14 0 0 1 6 0" fill="none" stroke="${ok}" stroke-width="1"/><circle cx="0" cy="6" r="3" fill="${ok}"/>`;
+    case 'ground': return '<rect x="-12" y="-12" width="24" height="24" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 3"/><path d="M-6 -6L6 6M6 -6L-6 6" stroke="currentColor" stroke-width="1.8"/>';
+    case 'vent': return `<rect x="-13" y="-5" width="26" height="10" fill="${wall}"/><rect x="-9" y="-9" width="18" height="18" rx="3" fill="${vent}" stroke="${ac}" stroke-width="1.8"/><path d="M-5 -6V6M-1.5 -6V6M2 -6V6M5.5 -6V6" stroke="${ac}" stroke-width="1.3"/>`;
+  }
+}
 
 function tileGlyph(t: Tile): string {
-  return '<svg width="26" height="26" viewBox="-18 -18 36 36" aria-hidden="true">' + TILE_SVG[t] + '</svg>';
+  return '<svg width="26" height="26" viewBox="-18 -18 36 36" aria-hidden="true">' + tileSvg(t) + '</svg>';
 }
 
 const PALETTE_CSS = `
@@ -58,7 +64,7 @@ const PALETTE_CSS = `
     background: var(--accent); color: #fff;
     box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 35%, transparent);
   }
-  .tool[aria-pressed="true"] .glyph { background: #fff; color: var(--accent); }
+  .tool[aria-pressed="true"] .glyph { background: var(--paper); color: var(--accent); }
   .tool[aria-pressed="true"] .price { color: rgb(255 255 255 / .8); }
   .name { font-size: 13px; font-weight: 600; line-height: 1.2; align-self: end; }
   .price { font-size: 11px; font-weight: 500; color: var(--ink-faint); align-self: start; font-variant-numeric: tabular-nums; }
@@ -120,7 +126,9 @@ export class NsPalette extends HTMLElement {
     this.shadow.appendChild(this.root);
 
     this.render();
-    this.unsub = ui.subscribe(() => this.render());
+    const u1 = ui.subscribe(() => this.render());
+    const u2 = onThemeChange(() => this.render());
+    this.unsub = () => { u1(); u2(); };
   }
 
   disconnectedCallback(): void {
@@ -173,7 +181,7 @@ export class NsPalette extends HTMLElement {
         chip.className = 'chip';
         chip.setAttribute('aria-pressed', String(u.cableType === c.type));
         chip.title = `${c.label}, ${CABLE_BANDWIDTH[c.type] / 1000} Gbps`;
-        chip.innerHTML = `<span class="swatch" style="background:${c.color}"></span>${c.label}`;
+        chip.innerHTML = `<span class="swatch" style="background:${hex(CABLE_COLOR[c.type])}"></span>${c.label}`;
         chip.addEventListener('click', () => {
           ui.update((x) => { x.cableType = c.type; }, 'ui');
         });

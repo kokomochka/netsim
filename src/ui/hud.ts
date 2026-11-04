@@ -13,6 +13,7 @@ import { buildCtx } from '../sim/net';
 type Tab = 'goals' | 'staff' | 'domains' | 'events';
 import { fmtTime } from './inspector';
 import { baseStyle } from './styles';
+import { onThemeChange, theme, toggleTheme } from './theme';
 
 function hintText(): string {
   const u = ui.get();
@@ -96,6 +97,9 @@ const TOPBAR_CSS = `
   .badge { display: inline-block; min-width: 20px; padding: 1px 6px; margin-left: 6px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; text-align: center; }
   button[data-action="menu"] { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 30%, transparent); }
   button[data-action="menu"]:hover { background: var(--accent-strong); color: #fff; }
+  button.theme { width: 38px; padding: 0; display: grid; place-items: center; border-radius: 10px; background: var(--well); }
+  button.theme:hover { background: var(--accent-soft); color: var(--accent); }
+  button.theme svg { width: 18px; height: 18px; }
   .menu-wrap { position: relative; }
   .menu {
     position: absolute; right: 0; top: calc(100% + 8px); z-index: 50; display: grid; gap: 2px; padding: 8px; min-width: 240px;
@@ -143,7 +147,7 @@ export class NsTopbar extends HTMLElement {
     const root = document.createElement('div');
     root.style.display = 'contents';
     root.innerHTML = `
-      <div class="brand"><span class="logo"><span class="word">Net<span>Sim</span></span></span><span class="stage">Phase 4 · Building &amp; staff</span></div>
+      <div class="brand"><span class="logo"><span class="word">Net<span>Sim</span></span></span></div>
       <div class="hint" aria-live="polite"></div>
       <div class="right">
         <div class="econ">
@@ -156,6 +160,7 @@ export class NsTopbar extends HTMLElement {
         <button class="goals" data-action="domains" title="Public IPs, domains and DNS">Internet</button>
         <button class="goals" data-action="staff" title="Engineers, jobs and security">Staff<span class="badge" data-el="staffcount">0</span></button>
         <button class="goals" data-action="goals" title="Goals, unlocks and events">Goals<span class="badge" data-el="goalcount">0</span></button>
+        <button class="theme ghost" data-action="theme" title="Switch light / dark mode" aria-label="Switch light / dark mode"></button>
         <div class="menu-wrap">
           <button data-action="menu" aria-haspopup="true" aria-expanded="false">Game ▾</button>
           <div class="menu" hidden>
@@ -195,8 +200,15 @@ export class NsTopbar extends HTMLElement {
       try { this.actions?.importSave(await f.text()); } catch { toast('Could not read that file.', 'error'); }
       this.toggleMenu(false);
     });
+    const themeBtn = this.shadow.querySelector<HTMLButtonElement>('button.theme')!;
+    const SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+    const MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+    const paintTheme = () => { themeBtn.innerHTML = theme() === 'dark' ? SUN : MOON; themeBtn.title = theme() === 'dark' ? 'Light mode' : 'Dark mode'; };
+    paintTheme();
+    onThemeChange(paintTheme);
     this.shadow.addEventListener('click', (e) => {
       const t = (e.target as HTMLElement).closest('button') as HTMLButtonElement | null;
+      if (t === themeBtn) { toggleTheme(); return; }
       const a = t?.dataset.action;
       if (!a || !t) return;
       void this.onAction(a, t);

@@ -6,17 +6,15 @@ import { assertNever, type DeviceKind } from '../state/types';
 /** CSS hex for a Pixi 0xRRGGBB colour. */
 export const hex = (n: number): string => '#' + n.toString(16).padStart(6, '0');
 
-// Same hues as the canvas, so palette, panels and map agree.
-export const KIND_CSS = Object.fromEntries(
-  Object.entries(KIND_COLOR).map(([k, v]) => [k, hex(v)]),
-) as Record<DeviceKind, string>;
+// Same hues as the canvas (current theme), so palette, panels and map agree.
+export const kindCss = (k: DeviceKind): string => hex(KIND_COLOR[k]);
 
 function svgWrap(size: number, body: string): string {
   return `<svg width="${size}" height="${size}" viewBox="-18 -18 36 36" aria-hidden="true">${body}</svg>`;
 }
 
 export function kindGlyph(kind: DeviceKind, size = 26): string {
-  const c = KIND_CSS[kind];
+  const c = kindCss(kind);
   let body: string;
   switch (kind) {
     case 'server':

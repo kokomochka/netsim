@@ -38,8 +38,9 @@ import {
   addRole, allFqdns, editRole, setRoleLinks, setPortMedia, setServiceFqdn, buyPart, deleteCable, deleteDevice, editDevice, genId, publicIps, removeRole, rotateDevice, runtime,
   select, setCableType, setServicePublicIp, setUplinkTier, toast, ui, world, cancelUpgrade, onBench, pendingParts, setCert,
 } from '../state/world';
-import { cableGlyph, KIND_CSS, kindGlyph } from './glyphs';
+import { cableGlyph, kindCss, kindGlyph } from './glyphs';
 import { baseStyle } from './styles';
+import { onThemeChange } from './theme';
 
 const SIDE_NAME = { N: 'top', E: 'right', S: 'bottom', W: 'left' } as const;
 
@@ -99,6 +100,11 @@ const INSPECTOR_CSS = `
   .rt-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 46px 28px; }
   .nat-row { grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) 28px; }
   .nat-row .arrow { color: var(--ink-faint); text-align: center; }
+  .px-card { gap: 6px; }
+  .px-head { grid-template-columns: minmax(0, 1fr) 28px; }
+  .px-be { grid-template-columns: 22px minmax(0, 1fr) 28px; }
+  .px-n { font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--ink-faint); text-align: center; }
+  .px-foot { grid-template-columns: minmax(0, 1fr); justify-items: start; gap: 4px; }
   .fw-row1 { grid-template-columns: 26px 70px 62px minmax(0, 1fr) 28px 28px 28px; }
   .fw-row2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .fw-row3 { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 0.8fr); }
@@ -316,6 +322,7 @@ export class NsInspector extends HTMLElement {
         else this.schedule();
       }),
       ui.subscribe(() => this.schedule()),
+      onThemeChange(() => this.schedule()),
     );
   }
 
@@ -1053,25 +1060,59 @@ export class NsInspector extends HTMLElement {
       return box;
     }
     if (role === 'proxy') {
-      box.appendChild(el('span', 'lbl', 'Name → back end (internal name or IP)'));
+      box.appendChild(el('span', 'lbl', 'Public name → back ends (internal name or IP), one per row'));
       const names = allFqdns(s);
-      (r.rules ?? []).forEach((rule, i) => {
-        const row = el('div', 'row nat-row');
-        row.appendChild(makeSelect(`px-${rule.id}-n`, [{ value: '', label: names.length ? 'choose a name' : 'no domains yet' }, ...names.map((n) => ({ value: n, label: n }))], rule.fqdn, 'Public name', (v) => editRole(d.id, 'proxy', (x) => { const y = x.rules?.[i]; if (y) y.fqdn = v; })));
-        row.appendChild(el('span', 'arrow', '→'));
-        row.appendChild(makeInput(`px-${rule.id}-b`, rule.backend, { placeholder: 'app1.lan, app2.lan', ariaLabel: 'Back ends', onCommit: (v) => editRole(d.id, 'proxy', (x) => { const y = x.rules?.[i]; if (y) y.backend = v; }) }));
-        row.appendChild(btn('✕', () => editRole(d.id, 'proxy', (x) => { x.rules?.splice(i, 1); }), 'icon-btn danger', 'Delete rule'));
-        box.appendChild(row);
-        box.appendChild(this.liveText(() => {
-          const v = Object.values(world.get().services).find((y) => y.fqdn === rule.fqdn);
-          if (!rule.fqdn) return '';
-          if (!v) return `No service uses ${rule.fqdn} yet: set it as a service's domain name.`;
+      const rules = r.rules ?? [];
+      // rules sharing a public name form one group: the proxy balances over them and fails over
+      const groups: { fqdn: string; ids: string[] }[] = [];
+      for (const rule of rules) {
+        const g = rule.fqdn ? groups.find((x) => x.fqdn === rule.fqdn) : undefined;
+        if (g) g.ids.push(rule.id); else groups.push({ fqdn: rule.fqdn, ids: [rule.id] });
+      }
+      const editRules = (fn: (list: { id: string; fqdn: string; backend: string }[]) => void) =>
+        editRole(d.id, 'proxy', (x) => { fn((x.rules ??= [])); });
+      groups.forEach((g, gi) => {
+        const card = el('div', 'card px-card');
+        const head = el('div', 'row px-head');
+        head.appendChild(makeSelect(`px-g${gi}-${g.ids[0]}-n`, [{ value: '', label: names.length ? 'choose a name' : 'no domains yet' }, ...[...names, ...(g.fqdn && !names.includes(g.fqdn) ? [g.fqdn] : [])].map((n) => ({ value: n, label: n }))], g.fqdn, 'Public name',
+          (v) => editRules((list) => { for (const y of list) if (g.ids.includes(y.id)) y.fqdn = v; })));
+        head.appendChild(btn('✕', () => editRules((list) => { for (let i = list.length - 1; i >= 0; i--) if (g.ids.includes(list[i]!.id)) list.splice(i, 1); }), 'icon-btn danger', 'Delete this name and all its back ends'));
+        card.appendChild(head);
+        g.ids.forEach((id, bi) => {
+          const rule = rules.find((y) => y.id === id)!;
+          const row = el('div', 'row px-be');
+          row.appendChild(el('span', 'px-n', bi === 0 ? '→' : String(bi + 1)));
+          row.appendChild(makeInput(`px-${id}-b`, rule.backend, {
+            placeholder: bi === 0 ? 'app1.lan or 192.168.10.10' : 'another back end', ariaLabel: `Back end ${bi + 1}`,
+            onCommit: (v) => editRules((list) => {
+              const i = list.findIndex((y) => y.id === id);
+              if (i < 0) return;
+              const parts = v.split(/[\s,]+/).filter(Boolean);
+              list[i]!.backend = parts[0] ?? '';
+              list.splice(i + 1, 0, ...parts.slice(1).map((b) => ({ id: genId('rule'), fqdn: list[i]!.fqdn, backend: b })));
+            }),
+          }));
+          row.appendChild(btn('✕', () => editRules((list) => { const i = list.findIndex((y) => y.id === id); if (i >= 0) list.splice(i, 1); }), 'icon-btn danger', 'Remove this back end'));
+          card.appendChild(row);
+        });
+        const foot = el('div', 'row px-foot');
+        foot.appendChild(btn('+ Add back end', () => editRules((list) => {
+          let last = -1;
+          list.forEach((y, i) => { if (g.ids.includes(y.id)) last = i; });
+          list.splice(last + 1, 0, { id: genId('rule'), fqdn: g.fqdn, backend: '' });
+        }), 'add', 'Another back end for the same name: load is balanced and it takes over if one dies'));
+        foot.appendChild(this.liveText(() => {
+          if (!g.fqdn) return '';
+          const v = Object.values(world.get().services).find((y) => y.fqdn === g.fqdn);
+          if (!v) return `No service uses ${g.fqdn} yet: set it as a service's domain name.`;
           const c = runtime.proxyChk[`${v.id}@${d.id}`];
           return c ? `${c.ok ? '✓' : '✕'} ${c.why}` : 'checking…';
         }, 'sub'));
+        card.appendChild(foot);
+        box.appendChild(card);
       });
-      box.appendChild(btn('+ Add rule', () => editRole(d.id, 'proxy', (x) => { (x.rules ??= []).push({ id: genId('rule'), fqdn: '', backend: '' }); }), 'add'));
-      box.appendChild(el('p', 'note', 'List several back ends separated by commas to balance load and fail over when one dies. Back ends given by name are looked up through this server\'s DNS server; "this server" works too. For DNS failover, give a name several records pointing at different proxies.'));
+      box.appendChild(btn('+ Add name', () => editRules((list) => { list.push({ id: genId('rule'), fqdn: '', backend: '' }); }), 'add'));
+      box.appendChild(el('p', 'note', 'Give a name two or more back ends to balance load and fail over when one dies. Back ends given by name are looked up through this server\'s DNS server; "this server" works too. For DNS failover, give a name several records pointing at different proxies.'));
       return box;
     }
     if (role === 'dns_local') {
@@ -1520,7 +1561,7 @@ export class NsInspector extends HTMLElement {
     const frag = document.createDocumentFragment();
     const def = DEVICE_DEFS[d.kind];
     const header = document.createElement('header');
-    header.style.setProperty('--kind', KIND_CSS[d.kind]);
+    header.style.setProperty('--kind', kindCss(d.kind));
     const glyph = el('span', 'glyph');
     glyph.innerHTML = kindGlyph(d.kind, 30);
     header.appendChild(glyph);
