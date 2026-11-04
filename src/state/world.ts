@@ -54,7 +54,7 @@ export function freshEconomy(): Economy {
 export function freshUnlocks(): Unlocks {
   return {
     macLearning: false, dhcp: false, dynamicRouting: false, serverM: false, serverL: false,
-    carrierUplink: false, monitoring: false, autoMitigation: false, upstreamFiltering: false, throttling: false,
+    carrierUplink: false, monitoring: false, autoMitigation: false, upstreamFiltering: false, throttling: false, dynamicNat: false,
   };
 }
 
@@ -132,7 +132,7 @@ export const onToast = (fn: ToastFn) => { toastListeners.add(fn); return () => t
 export const toast = (msg: string, kind: ToastKind = 'info') => toastListeners.forEach((fn) => fn(msg, kind));
 
 // ---------- helpers ----------
-function nextId(s: WorldState, prefix: 'dev' | 'cab' | 'rt' | 'fw' | 'flw' | 'svc' | 'inc' | 'rl' | 'nat' | 'uf' | 'dom' | 'rec' | 'rule' | 'pip' | 'mt'): string {
+function nextId(s: WorldState, prefix: 'dev' | 'cab' | 'rt' | 'fw' | 'flw' | 'svc' | 'inc' | 'rl' | 'nat' | 'uf' | 'dom' | 'rec' | 'rule' | 'pip' | 'mt' | 'pat'): string {
   return `${prefix}_${s.nextId++}`;
 }
 
@@ -344,7 +344,7 @@ export function editDevice<K extends DeviceKind>(id: DeviceId, kind: K, fn: (d: 
 }
 
 /** Allocate an id for a route, rule, or rate limit. Call inside editDevice(). */
-export function genId(prefix: 'rt' | 'fw' | 'rl' | 'nat' | 'uf' | 'rec' | 'rule' | 'mt'): string {
+export function genId(prefix: 'rt' | 'fw' | 'rl' | 'nat' | 'uf' | 'rec' | 'rule' | 'mt' | 'pat'): string {
   return nextId(world.get(), prefix);
 }
 

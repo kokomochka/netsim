@@ -448,7 +448,7 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
           }
           if (!block || !inCidr(pkt.src, block)) {
             h.note = `drops it: source ${ipStr(pkt.src)} is not one of your public addresses`;
-            return b.block('bogon_src', `Traffic reached the ISP with private source ${ipStr(pkt.src)}. Add a static NAT entry for it on your edge device, or give it a public IP.`);
+            return b.block('bogon_src', `Traffic reached the ISP with private source ${ipStr(pkt.src)}. Add a static NAT entry for it on your edge device${ctx.s.unlocks.dynamicNat ? ', or a dynamic NAT rule for its network' : ''}, or give it a public IP.`);
           }
           b.p.reachedServer = d.id;
           b.p.resources.push(`dev:${d.id}`);
@@ -473,6 +473,7 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
         const notes: string[] = [];
         const inIf = d.kind === 'firewall' ? d.interfaces.find((i) => i.port === inPort) : undefined;
         if (inIf) notes.push(`in on ${inIf.name}`);
+        let srcNatted = false;
         // static NAT
         if (pkt.dir === 'fwd') {
           const n = natFor(d, (x) => parseIp(x.publicIp) === pkt.dst);
@@ -480,7 +481,7 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
           if (n && priv !== null) { notes.push(`NAT ${n.publicIp} → ${n.privateIp}`); pkt = { ...pkt, dst: priv }; }
           const sn = natFor(d, (x) => parseIp(x.privateIp) === pkt.src);
           const spub = sn ? parseIp(sn.publicIp) : null;
-          if (sn && spub !== null) { notes.push(`NAT source ${sn.privateIp} → ${sn.publicIp}`); pkt = { ...pkt, src: spub }; }
+          if (sn && spub !== null) { notes.push(`NAT source ${sn.privateIp} → ${sn.publicIp}`); pkt = { ...pkt, src: spub }; srcNatted = true; }
         } else {
           const n = natFor(d, (x) => parseIp(x.privateIp) === pkt.src);
           const pub = n ? parseIp(n.publicIp) : null;
@@ -514,6 +515,13 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
           } else if (pkt.dir === 'ret') {
             notes.push('reply of an allowed connection, passed (stateful)');
           }
+        }
+        // dynamic source NAT: inside hosts leaving this port share its address
+        if (pkt.dir === 'fwd' && ctx.s.unlocks.dynamicNat && !srcNatted) {
+          const outIp = d.interfaces.find((i) => i.port === rt.port)?.ip;
+          const rule = (d.pat ?? []).find((r) => r.outPort === rt.port && (() => { const c = parseCidr(r.src); return !!c && inCidr(pkt.src, c); })());
+          const pub = outIp ? parseIp(outIp) : null;
+          if (rule && pub !== null && pub !== pkt.src) { notes.push(`dynamic NAT source ${ipStr(pkt.src)} → ${outIp}`); pkt = { ...pkt, src: pub }; }
         }
         h.outPort = rt.port;
         h.note = notes.join(' · ');

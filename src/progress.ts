@@ -215,6 +215,31 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     progress: (s) => (Object.values(s.services).some((v) => v.fqdn && v.availability >= 0.95) ? 1 : 0),
   },
   {
+    id: 'way_out',
+    title: 'Way out',
+    goal: 'Get an internal server to the internet: an update mirror, DNS forwarder or forward proxy downloading through a static NAT entry.',
+    how: [
+      'Give a server with a private address the Update mirror role (upstream: direct) or the Forward proxy role.',
+      'The internet cannot answer 192.168.x.x. On your edge firewall add a static NAT entry: a free public IP → that server.',
+      'Allow its outgoing traffic (tcp/443) on the firewall if inside → outside is not allowed by default.',
+      'Every server that needs to get out now costs one public address. The reward fixes that.',
+    ],
+    reward: 'Unlocks dynamic NAT: many inside hosts share the firewall\'s outside address.',
+    unlocks: ['dynamicNat'],
+    requires: ['hello_world'],
+    progress: (s, c) => {
+      const up = Object.values(s.devices).find((d) => d.kind === 'uplink');
+      if (!up) return 0;
+      return Object.values(s.flows).some((f) => {
+        if (f.kind !== 'control' || !/^(mirror|fwdproxy|dnsfwd):/.test(f.tag ?? '')) return false;
+        const p = c.paths[f.id];
+        const o = s.devices[f.origin];
+        const ip = o && 'ip' in o ? o.ip : '';
+        return !!p && !p.blocked && p.reachedServer === up.id && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip);
+      }) ? 1 : 0;
+    },
+  },
+  {
     id: 'five_nines',
     title: 'Three nines',
     goal: 'Keep 99.9 % uptime across a full hour of play.',

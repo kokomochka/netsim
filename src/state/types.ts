@@ -109,6 +109,9 @@ export interface Route {
 }
 
 /** Static one-to-one NAT (Cisco "static (inside,outside)" / iptables DNAT+SNAT). */
+/** Dynamic source NAT: inside sources leaving through one port take that port's address. */
+export interface PatRule { id: string; src: string; outPort: number }
+
 export interface NatEntry {
   id: string;
   publicIp: string;   // address visitors use
@@ -280,6 +283,7 @@ export interface RouterDevice extends DeviceBase {
   interfaces: RouterInterface[];
   routes: Route[];
   nat: NatEntry[];
+  pat?: PatRule[];               // dynamic source NAT (unlock: dynamicNat)
   ospf: boolean;
   usage: Usage;
 }
@@ -346,6 +350,7 @@ export interface FirewallDevice extends DeviceBase {
   defaultPolicy: FwAction;
   routes: Route[];
   nat: NatEntry[];
+  pat?: PatRule[];               // dynamic source NAT (unlock: dynamicNat)
   ospf: boolean;
   capacityMbps: number;
   usage: Usage;
@@ -504,11 +509,12 @@ export interface Unlocks {
   autoMitigation: boolean;       // scrubber blocks heavy sources by itself
   upstreamFiltering: boolean;    // ask the ISP to drop ranges before your pipe
   throttling?: boolean;          // per-server temperature cap (DVFS)
+  dynamicNat?: boolean;          // many inside hosts share the outside address (PAT)
 }
 
 export type AchievementId =
   | 'hello_world' | 'locked_down' | 'patch_panel' | 'two_hops' | 'address_book'
-  | 'first_k' | 'fix_early' | 'ddos_1' | 'ddos_5' | 'ten_k' | 'five_nines' | 'caught' | 'safety_net' | 'on_the_map' | 'cool_head';
+  | 'first_k' | 'fix_early' | 'ddos_1' | 'ddos_5' | 'ten_k' | 'five_nines' | 'caught' | 'safety_net' | 'on_the_map' | 'cool_head' | 'way_out';
 
 export interface AchievementState { done: boolean; at: number | null; progress: number }
 

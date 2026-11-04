@@ -100,6 +100,8 @@ const INSPECTOR_CSS = `
   .rt-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 46px 28px; }
   .nat-row { grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) 28px; }
   .nat-row .arrow { color: var(--ink-faint); text-align: center; }
+  .pat-row { grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) 28px; }
+  .pat-row .arrow { color: var(--ink-faint); text-align: center; }
   .mt-row { grid-template-columns: minmax(0, 1fr) 150px 28px; }
   .px-card { gap: 6px; }
   .px-head { grid-template-columns: minmax(0, 1fr) 28px; }
@@ -646,6 +648,25 @@ export class NsInspector extends HTMLElement {
       if (m) sec.appendChild(m);
     });
     sec.appendChild(btn('+ Add NAT entry', () => edit((x) => { x.nat.push({ id: genId('nat'), publicIp: '', privateIp: '' }); }), 'add'));
+    // dynamic source NAT
+    sec.appendChild(el('h3', undefined, 'Dynamic NAT'));
+    if (!s.unlocks.dynamicNat) {
+      sec.appendChild(el('p', 'locked', `Many inside hosts sharing one outside address: ${lockedMsg('dynamicNat')}`));
+      return sec;
+    }
+    sec.appendChild(el('p', 'note', 'Outgoing traffic from an inside network takes the address of the port it leaves through. One public IP for everything that only needs to get out; nobody outside can start a connection to them. Static NAT entries win for their hosts.'));
+    const ports = d.interfaces.map((i) => ({ value: String(i.port), label: `${'name' in i ? (i as { name: string }).name : d.ports[i.port]?.label ?? `port ${i.port}`}${i.ip ? ` (${i.ip})` : ''}` }));
+    (d.pat ?? []).forEach((r, i) => {
+      const upd = (fn: (x: NonNullable<typeof d.pat>[number]) => void) => edit((x) => { const y = x.pat?.[i]; if (y) fn(y); });
+      const row = el('div', 'row pat-row');
+      row.appendChild(makeInput(`${r.id}-src`, r.src, { placeholder: '192.168.10.0/24', ariaLabel: 'Inside network', check: parseCidr(r.src) || !r.src ? null : { level: 'bad', msg: 'Use a network like 192.168.10.0/24' }, onCommit: (v) => upd((x) => { x.src = v.trim(); }) }));
+      row.appendChild(el('span', 'arrow', '→'));
+      row.appendChild(makeSelect(`${r.id}-out`, ports, String(r.outPort), 'Leaves through', (v) => upd((x) => { x.outPort = Number(v); })));
+      row.appendChild(btn('✕', () => edit((x) => { x.pat?.splice(i, 1); }), 'icon-btn danger', 'Delete dynamic NAT rule'));
+      sec.appendChild(row);
+    });
+    const outside = d.interfaces.find((i) => 'name' in i && (i as { name: string }).name === 'outside') ?? d.interfaces[0];
+    sec.appendChild(btn('+ Add dynamic NAT', () => edit((x) => { (x.pat ??= []).push({ id: genId('pat'), src: '', outPort: outside?.port ?? 0 }); }), 'add'));
     return sec;
   }
 

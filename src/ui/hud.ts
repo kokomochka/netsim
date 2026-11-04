@@ -403,7 +403,7 @@ const GOALS_CSS = `
 
 const UNLOCK_NAMES: Record<string, string> = {
   macLearning: 'MAC learning', dhcp: 'DHCP', dynamicRouting: 'OSPF', serverM: 'Server M', serverL: 'Server L',
-  carrierUplink: 'Carrier uplink', monitoring: 'Monitoring', autoMitigation: 'Auto-mitigation', upstreamFiltering: 'Upstream filtering',
+  carrierUplink: 'Carrier uplink', monitoring: 'Monitoring', autoMitigation: 'Auto-mitigation', upstreamFiltering: 'Upstream filtering', dynamicNat: 'Dynamic NAT',
 };
 
 export class NsGoals extends HTMLElement {
