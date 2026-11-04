@@ -1,9 +1,9 @@
 // Simulation engine (Phase 3): 20 tps fixed-timestep pipeline.
 //   topology (DHCP, OSPF) → events → incidents → flows → paths → congestion
-//   → usage → availability → economy → health → stats → achievements → carriers
+//   → usage → availability → economy → health → stats → achievements
 
 import {
-  CARRIER_MAX, CARRIER_MAX_AGE, CELL, DAY_TICKS, DDOS_FIRST_TICK, DDOS_FLOOD_S, DDOS_INTERVAL_FLOOR_S,
+  DAY_TICKS, DDOS_FIRST_TICK, DDOS_FLOOD_S, DDOS_INTERVAL_FLOOR_S,
   DDOS_INTERVAL_MAX_S, DDOS_INTERVAL_MIN_S, DDOS_MITIGATED_FRACTION, DDOS_RECON_S, DDOS_REWARD_SECONDS,
   DEVICE_PRICE, DEVICE_UPKEEP, MINUTE, CERT_BONUS, CERT_UPKEEP, CHASSIS, COMP_PRICE, CPU_PARTS, GPU_PARTS, LATENCY_KNEE, LATENCY_LOSS, RAM_PARTS, SWAP_SECONDS, OUTAGE_GRACE_TICKS, REPAIR, REPUTATION_GAIN_PER_MIN,
   REPUTATION_OUTAGE_HIT, ROUTER_CAPACITY_MBPS, SITE_MBPS, SITE_REVENUE, SWITCH_CAPACITY_MBPS, TICKS_PER_SEC,
@@ -75,7 +75,6 @@ export function tick(state: WorldState, cache: RuntimeCache): void {
     stats(state, cache);
     if (state.time.tick % 10 === 0) checkAchievements(state, cache);
   }
-  carriers(state, cache);
 }
 
 // ─── Topology services ──────────────────────────────────────────────────────
@@ -1250,51 +1249,6 @@ export function addLog(state: WorldState, deviceId: DeviceId, msg: string, level
 
 // ─── Carriers (visual only) ─────────────────────────────────────────────────
 
-function cableLen(state: WorldState, id: string | null): number {
-  const c = id ? state.cables[id] : undefined;
-  if (!c) return CELL;
-  let l = 0;
-  for (let i = 0; i < c.path.length - 1; i++) l += Math.hypot(c.path[i + 1]!.x - c.path[i]!.x, c.path[i + 1]!.y - c.path[i]!.y);
-  return Math.max(l, 1);
-}
-
-const spawnAcc: Record<string, number> = {};
-
-function carriers(state: WorldState, cache: RuntimeCache): void {
-  const list = cache.carriers;
-  const step = (6 * CELL / TICKS_PER_SEC) * state.speed;
-  for (let i = list.length - 1; i >= 0; i--) {
-    const c = list[i]!;
-    c.age++;
-    const p = cache.paths[c.flowId];
-    if (!p || c.age > CARRIER_MAX_AGE) { list.splice(i, 1); continue; }
-    if (c.dying > 0) { c.dying--; if (c.dying === 0) list.splice(i, 1); continue; }
-    const hop = p.hops[c.pathIndex];
-    const len = cableLen(state, hop?.cableId ?? null);
-    c.progress += step / len;
-    if (c.progress >= 1) {
-      c.progress = 0;
-      c.pathIndex++;
-      const last = p.hops.length - 1;
-      if (p.blocked && p.blockedAt !== null && c.pathIndex >= p.blockedAt) { c.pathIndex = p.blockedAt; c.dying = 12; continue; }
-      if (c.pathIndex >= last || !p.hops[c.pathIndex]?.cableId) { list.splice(i, 1); continue; }
-    }
-  }
-  for (const f of Object.values(state.flows)) {
-    const p = cache.paths[f.id];
-    if (!p || p.hops.length < 2 || !p.hops[0]!.cableId) continue;
-    const perSec = Math.max(1, Math.min(12, 1 + Math.log2(Math.max(f.rateMbps, 1))));
-    spawnAcc[f.id] = (spawnAcc[f.id] ?? Math.random()) + (perSec * state.speed) / TICKS_PER_SEC;
-    while (spawnAcc[f.id]! >= 1) {
-      spawnAcc[f.id]! -= 1;
-      if (list.length >= CARRIER_MAX) list.shift();
-      list.push({
-        flowId: f.id, kind: f.kind, pathIndex: 0, progress: 0, age: 0, dying: 0,
-        size: f.kind === 'attack' ? Math.min(6, 3.2 + f.rateMbps / 150) : f.kind === 'probe' ? 2.4 : 2.6,
-      });
-    }
-  }
-}
 
 // ─── Init ───────────────────────────────────────────────────────────────────
 

@@ -3,7 +3,7 @@
 import { Application, Container, Graphics, Text } from 'pixi.js';
 import { BODY, CELL, HP_CRITICAL, HP_WARNING } from '../balance';
 import { portPos, portUsage } from '../state/geometry';
-import { assertNever, type Cable, type Device, type Vec2 } from '../state/types';
+import { assertNever, type Cable, type Device, type Flow, type FlowKind, type ResolvedPath, type Vec2 } from '../state/types';
 import { pointer, runtime, ui, world, deviceAtCell } from '../state/world';
 import { doorStates, smartDoorsLocked } from '../sim/staff';
 import { inParking, isIndoor, isPath, placementError, tileAt } from '../state/floor';
@@ -41,6 +41,25 @@ function subLabel(d: Device, usedPorts: Map<string, string>): string {
     case 'badge': return d.ip || 'no IP';
     default: return assertNever(d);
   }
+}
+
+/** Shift a polyline sideways (to its right) by d, keeping corners joined. */
+function offsetPath(pts: Vec2[], d: number): Vec2[] {
+  const n = pts.length;
+  const norm = (i: number): Vec2 => {
+    const a = pts[i]!, b = pts[i + 1]!;
+    const l = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    return { x: -(b.y - a.y) / l, y: (b.x - a.x) / l };
+  };
+  return pts.map((p, i) => {
+    const n0 = i > 0 ? norm(i - 1) : norm(0);
+    const n1 = i < n - 1 ? norm(i) : norm(n - 2);
+    let nx = n0.x + n1.x, ny = n0.y + n1.y;
+    const l = Math.hypot(nx, ny) || 1;
+    nx /= l; ny /= l;
+    const cos = Math.max(0.5, nx * n1.x + ny * n1.y);
+    return { x: p.x + (nx * d) / cos, y: p.y + (ny * d) / cos };
+  });
 }
 
 const ROLE_SHORT: Record<string, string> = { web: 'web', gpu: 'gpu', nas: 'nas', san: 'san', auth: 'auth', mirror: 'mirror' };
@@ -99,6 +118,7 @@ export class Renderer {
     ui.subscribe(() => this.redrawInteractive());
     pointer.subscribe(() => this.redrawInteractive());
     this.app.renderer.on('resize', () => this.drawGrid());
+    this.app.ticker.add(() => this.drawStreams(performance.now()));
 
     this.applyCamera();
     this.redrawWorld();
@@ -662,25 +682,108 @@ export class Renderer {
     }
   }
 
-  /** Point at fraction t along a cable, walking from the end attached to devId. */
-  private alongCable(c: Cable, fromDev: string, t: number): Vec2 | null {
-    const pts = c.a.deviceId === fromDev ? c.path : [...c.path].reverse();
-    if (pts.length < 2) return null;
-    let total = 0;
-    const seg: number[] = [];
-    for (let i = 0; i < pts.length - 1; i++) { const l = Math.hypot(pts[i + 1]!.x - pts[i]!.x, pts[i + 1]!.y - pts[i]!.y); seg.push(l); total += l; }
-    let d = Math.min(1, Math.max(0, t)) * total;
-    for (let i = 0; i < seg.length; i++) {
-      if (d <= seg[i]! || i === seg.length - 1) {
-        const f = seg[i]! ? d / seg[i]! : 0;
-        return { x: pts[i]!.x + (pts[i + 1]!.x - pts[i]!.x) * f, y: pts[i]!.y + (pts[i + 1]!.y - pts[i]!.y) * f };
+  // ── Traffic streams ──────────────────────────────────────────────────────
+  // Dashes slide along each cable in the direction traffic moves. They are
+  // animated every frame in real time (not per sim tick), so they stay smooth
+  // at 4×: speed only nudges the pace. Width follows volume, colour the kind.
+  private streams: { pts: Vec2[]; mbps: number; color: number; attack: boolean }[] = [];
+  private blocks: Vec2[] = [];
+  private streamPhase = 0;
+  private lastFrame = 0;
+
+  /** Sum traffic per cable and direction. Cheap enough to run each sim tick. */
+  private collectStreams(): void {
+    const s = world.get();
+    const agg = new Map<string, { cable: Cable; from: string; mbps: number; byKind: Map<FlowKind, number> }>();
+    const blocks: Vec2[] = [];
+    const add = (p: ResolvedPath, f: Flow, mbps: number) => {
+      const end = p.blocked && p.blockedAt !== null ? p.blockedAt : p.hops.length - 1;
+      for (let i = 0; i < end; i++) {
+        const h = p.hops[i]!;
+        const cable = h.cableId ? s.cables[h.cableId] : undefined;
+        if (!cable || cable.path.length < 2) continue;
+        const key = `${cable.id}>${h.deviceId}`;
+        let e = agg.get(key);
+        if (!e) { e = { cable, from: h.deviceId, mbps: 0, byKind: new Map() }; agg.set(key, e); }
+        e.mbps += mbps;
+        e.byKind.set(f.kind, (e.byKind.get(f.kind) ?? 0) + mbps);
       }
-      d -= seg[i]!;
+      if (p.blocked && p.blockedAt !== null) {
+        const d = s.devices[p.hops[p.blockedAt]?.deviceId ?? ''];
+        if (d) blocks.push({ x: (d.gridPos.gx + 0.5) * CELL, y: (d.gridPos.gy + 0.5) * CELL });
+      }
+    };
+    for (const f of Object.values(s.flows)) {
+      const p = runtime.paths[f.id];
+      if (!p || p.hops.length < 2) continue;
+      const mbps = Math.max(0.1, f.rateMbps);
+      add(p, f, mbps);
+      if (!p.blocked && p.ret && !p.ret.blocked) add(p.ret, f, mbps * 0.5);
     }
-    return null;
+    this.streams = [];
+    // two directions on one cable run side by side
+    const both = new Set<string>();
+    for (const e of agg.values()) {
+      const other = e.cable.a.deviceId === e.from ? e.cable.b.deviceId : e.cable.a.deviceId;
+      if (agg.has(`${e.cable.id}>${other}`)) both.add(e.cable.id);
+    }
+    for (const e of agg.values()) {
+      let kind: FlowKind = 'http', best = -1;
+      if (e.byKind.has('attack')) kind = 'attack';
+      else for (const [k, v] of e.byKind) if (v > best) { kind = k; best = v; }
+      let pts = e.cable.a.deviceId === e.from ? e.cable.path : [...e.cable.path].reverse();
+      if (both.has(e.cable.id)) pts = offsetPath(pts, 2.2);
+      this.streams.push({ pts, mbps: e.mbps, color: this.kindColor(kind), attack: kind === 'attack' });
+    }
+    this.blocks = blocks;
   }
 
-  /** Redraw carrier particles and health badges — called every sim tick. */
+  private kindColor(k: FlowKind): number {
+    return k === 'attack' ? COLORS.carrierAttack : k === 'probe' ? COLORS.healthWarn
+      : k === 'control' ? COLORS.carrierControl : k === 'backup' ? COLORS.carrierBackup : k === 'backend' || k === 'proxied' ? COLORS.carrierBackend
+      : k === 'transit' ? COLORS.carrierTransit : COLORS.carrierNormal;
+  }
+
+  /** Per-frame: draw the dash streams at the current phase. */
+  private drawStreams(now: number): void {
+    const dt = this.lastFrame ? Math.min(0.1, (now - this.lastFrame) / 1000) : 0;
+    this.lastFrame = now;
+    const speed = world.get().speed;
+    this.streamPhase += dt * (speed > 0 ? 46 * Math.sqrt(speed) : 0);
+    const cg = this.carriers;
+    cg.clear();
+    const DASH = 4.5, PERIOD = 22;
+    for (const st of this.streams) {
+      const w = Math.min(3.6, 1.5 + Math.log2(1 + st.mbps) * 0.26);
+      const phase = (this.streamPhase * (st.attack ? 1.6 : 1)) % PERIOD;
+      let walked = 0;
+      for (let i = 0; i < st.pts.length - 1; i++) {
+        const a = st.pts[i]!, b = st.pts[i + 1]!;
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        if (len < 0.01) continue;
+        const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+        // dash k covers [k*PERIOD + phase, +DASH] in path distance
+        let k = Math.floor((walked - phase) / PERIOD);
+        for (;;) {
+          const d0 = k * PERIOD + phase - walked, d1 = d0 + DASH;
+          if (d0 >= len) break;
+          const t0 = Math.max(0, d0), t1 = Math.min(len, d1);
+          if (t1 > t0) cg.moveTo(a.x + ux * t0, a.y + uy * t0).lineTo(a.x + ux * t1, a.y + uy * t1);
+          k++;
+        }
+        walked += len;
+      }
+      cg.stroke({ width: w, color: st.color, alpha: 0.9, cap: 'round' });
+    }
+    if (this.blocks.length) {
+      const pulse = (now % 900) / 900;
+      for (const p of this.blocks) {
+        cg.circle(p.x, p.y, 10 + pulse * 16).stroke({ width: 2, color: COLORS.carrierAttack, alpha: (1 - pulse) * 0.8 });
+      }
+    }
+  }
+
+  /** Redraw health badges and sim-driven layers — called every sim tick. */
   private redrawSim(): void {
     const s = world.get();
     const cg = this.carriers;
@@ -695,28 +798,7 @@ export class Renderer {
       this.lastFloorDraw = now;
       this.drawFloor();
     }
-    for (const c of runtime.carriers) {
-      const path = runtime.paths[c.flowId];
-      if (!path) continue;
-      const hop = path.hops[c.pathIndex];
-      let pos: Vec2 | null = null;
-      if (c.dying > 0) {
-        const d = hop ? s.devices[hop.deviceId] : undefined;
-        if (!d) continue;
-        pos = { x: (d.gridPos.gx + 0.5) * CELL, y: (d.gridPos.gy + 0.5) * CELL };
-        const k = c.dying / 12;
-        cg.circle(pos.x, pos.y, c.size + (1 - k) * 8).stroke({ width: 1.5, color: COLORS.carrierAttack, alpha: k });
-        continue;
-      }
-      const cable = hop?.cableId ? s.cables[hop.cableId] : undefined;
-      if (!cable) continue;
-      pos = this.alongCable(cable, hop!.deviceId, c.progress);
-      if (!pos) continue;
-      const color = c.kind === 'attack' ? COLORS.carrierAttack : c.kind === 'probe' ? COLORS.healthWarn
-        : c.kind === 'control' ? COLORS.carrierControl : c.kind === 'backup' ? COLORS.carrierBackup : c.kind === 'backend' || c.kind === 'proxied' ? COLORS.carrierBackend
-        : c.kind === 'transit' ? COLORS.carrierTransit : COLORS.carrierNormal;
-      cg.circle(pos.x, pos.y, c.size).fill({ color, alpha: 0.9 });
-    }
+    this.collectStreams();
 
     // Health badges: colored indicators on degraded/failed devices
     const hg = this.healthBadges;
