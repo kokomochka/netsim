@@ -15,7 +15,13 @@ export function checkIp(v: string, emptyHint = 'Not set'): Check {
 
 export function checkMask(v: string): Check {
   if (v.trim() === '') return hint('Not set');
-  return parseMask(v) === null ? bad('Use a mask like 255.255.255.0 or /24') : null;
+  return parseMask(v) === null ? bad('Use a prefix length like /24') : null;
+}
+
+/** An address box in CIDR form: IP and prefix both needed. */
+export function checkAddr(ip: string, mask: string, emptyHint = 'Not set'): Check {
+  if (!ip.trim()) return hint(emptyHint);
+  return checkIp(ip) ?? (parseMask(mask) === null ? bad('Add the prefix length, like /24') : null);
 }
 
 export function checkCidr(v: string, allowAny: boolean): Check {

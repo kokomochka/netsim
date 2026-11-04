@@ -64,7 +64,7 @@ function defaultFwInterfaces(id: DeviceId, ports: Port[]): FirewallInterface[] {
     name: defs[i]?.name ?? `if${i}`,
     securityLevel: defs[i]?.securityLevel ?? 50,
     ip: '',
-    mask: '255.255.255.0',
+    mask: '/24',
     mac: macFor(id, p.index + 100),
     dhcp: { enabled: false },
   }));
@@ -105,7 +105,7 @@ export const DEVICE_DEFS: { [K in DeviceKind]: DeviceDef<K> } = {
       return {
         kind: 'server', id, name, gridPos, rotation: 0,
         ports: makePorts(this.ports), health: freshHealth(),
-        addressing: 'static', ip: '', mask: '255.255.255.0', gateway: '', extra: [], dns: '', mac: macFor(id),
+        addressing: 'static', ip: '', mask: '/24', gateway: '', extra: [], dns: '', mac: macFor(id),
         parts: { ...BASE_PARTS }, specs: specsFor(BASE_PARTS), roles: [],
         agents: { backup: { enabled: false, targetId: null }, failover: { enabled: false, partnerId: null, sanId: null }, monitor: { enabled: false, masterIp: '' } },
         usage: zeroUsage(), sw: freshSw(), compromised: null, hw: freshHw(BASE_PARTS), cert: false,
@@ -125,7 +125,7 @@ export const DEVICE_DEFS: { [K in DeviceKind]: DeviceDef<K> } = {
       const ports = makePorts(this.ports);
       return {
         kind: 'router', id, name, gridPos, rotation: 0, ports, health: freshHealth(),
-        interfaces: ports.map((p) => ({ port: p.index, ip: '', mask: '255.255.255.0', mac: macFor(id, p.index + 1), dhcp: { enabled: false } })),
+        interfaces: ports.map((p) => ({ port: p.index, ip: '', mask: '/24', mac: macFor(id, p.index + 1), dhcp: { enabled: false } })),
         routes: [], nat: [], ospf: false, usage: zeroUsage(), sw: freshSw(), compromised: null,
       };
     },
@@ -202,7 +202,7 @@ export const DEVICE_DEFS: { [K in DeviceKind]: DeviceDef<K> } = {
     create(id, name, gridPos) {
       return {
         kind: 'tower', access: 'cell', id, name, gridPos, rotation: 0, ports: makePorts(this.ports), health: freshHealth(),
-        addressing: 'static', ip: '', mask: '255.255.255.0', gateway: '', mac: macFor(id, 9),
+        addressing: 'static', ip: '', mask: '/24', gateway: '', mac: macFor(id, 9),
         subs: { demand: 1, reputation: 1, availability: 0, upTicks: 0, downSinceTick: null, flowId: null, spikeUntil: 0 },
         sw: freshSw(), compromised: null,
       };
@@ -220,7 +220,7 @@ export const DEVICE_DEFS: { [K in DeviceKind]: DeviceDef<K> } = {
     create(id, name, gridPos) {
       return {
         kind: 'badge', id, name, gridPos, rotation: 0, ports: makePorts(this.ports), health: freshHealth(),
-        addressing: 'static', ip: '', mask: '255.255.255.0', gateway: '', mac: macFor(id, 11), authIp: '', failMode: 'open',
+        addressing: 'static', ip: '', mask: '/24', gateway: '', mac: macFor(id, 11), authIp: '', failMode: 'open',
         sw: freshSw(), compromised: null,
       };
     },
@@ -250,7 +250,7 @@ export const DEVICE_DEFS: { [K in DeviceKind]: DeviceDef<K> } = {
     create(id, name, gridPos) {
       return {
         kind: 'desk', id, name, gridPos, rotation: 0, ports: makePorts(this.ports), health: freshHealth(),
-        addressing: 'static', ip: '', mask: '255.255.255.0', gateway: '', mac: macFor(id, 7), ownerId: null,
+        addressing: 'static', ip: '', mask: '/24', gateway: '', mac: macFor(id, 7), ownerId: null,
         sw: freshSw(), compromised: null,
       };
     },

@@ -39,6 +39,30 @@ export function parseMask(s: string): number | null {
   return p;
 }
 
+/** Masks are stored as "/24"; anything parseMask understands is normalised to that. */
+export function normMask(m: string): string {
+  const p = parseMask(m ?? '');
+  return p === null ? (m ?? '') : `/${p}`;
+}
+
+/** An interface address in CIDR form, "192.168.10.10/24" (or just the IP if the mask is unset). */
+export function addrText(ip: string, mask: string): string {
+  if (!ip) return '';
+  const p = parseMask(mask ?? '');
+  return p === null ? ip : `${ip}/${p}`;
+}
+
+/** Read "192.168.10.10/24". Returns the IP and "/24", or a message saying what is wrong. */
+export function parseAddr(v: string): { ip: string; mask: string } | string {
+  const t = v.trim();
+  if (!t) return { ip: '', mask: '' };
+  const [ip, pre, extra] = t.split('/');
+  if (extra !== undefined || parseIp(ip ?? '') === null) return 'Use an address like 192.168.10.10/24';
+  if (pre === undefined || pre === '') return `Add the prefix length: ${ip}/24 for a 256-address network`;
+  if (!/^\d{1,2}$/.test(pre) || Number(pre) > 32) return 'The prefix after / is a number from 0 to 32';
+  return { ip: ip!.trim(), mask: `/${Number(pre)}` };
+}
+
 export interface Cidr { net: number; prefix: number }
 
 /** Accepts "10.0.0.0/8" or a bare IP (treated as /32). */

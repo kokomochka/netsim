@@ -25,14 +25,14 @@ import {
 import { REASON_LABEL } from '../sim/net';
 import { DEVICE_DEFS } from '../state/devices';
 import { portSide, portUsage } from '../state/geometry';
-import { formatCidr, parseCidr, subnetOf } from '../state/ip';
+import { addrText, formatCidr, parseAddr, parseCidr, subnetOf } from '../state/ip';
 import {
   assertNever, type Cable, type CableType, type Device, type DeviceOf, type FirewallDevice, type FwAction,
   type DiskType, type FwProtocol, type Media, type PartSlot, type RaidLevel, type ServerParts, type ResolvedPath, type RoleKind, type RouterDevice, type Unlocks, type WorldState,
 } from '../state/types';
 import {
-  type Check, checkCidr, checkIp, checkMask, checkPorts, duplicateCheck, l3Subnets, natCheck, nextHopCheck,
-  overlapCheck, serverGatewayCheck,
+  type Check, checkCidr, checkIp, checkPorts, duplicateCheck, l3Subnets, natCheck, nextHopCheck,
+  overlapCheck, serverGatewayCheck, checkAddr,
 } from '../state/validate';
 import {
   addRole, allFqdns, buyBiggerBlock, nextBlockUpgrade, editRole, setRoleLinks, setPortMedia, setServiceFqdn, buyPart, deleteCable, deleteDevice, editDevice, genId, publicIps, removeRole, rotateDevice, runtime,
@@ -96,7 +96,7 @@ const INSPECTOR_CSS = `
   .side { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint); }
   .card { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--well-soft); min-width: 0; }
   .row { display: grid; gap: 6px; align-items: center; min-width: 0; }
-  .if-row { grid-template-columns: 50px minmax(0, 1fr) 134px; }
+  .if-row { grid-template-columns: 50px minmax(0, 1fr); }
   .rt-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 46px 28px; }
   .nat-row { grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) 28px; }
   .nat-row .arrow { color: var(--ink-faint); text-align: center; }
@@ -111,7 +111,7 @@ const INSPECTOR_CSS = `
   .fw-row1 { grid-template-columns: 26px 82px 68px minmax(0, 1fr) 28px 28px 28px; }
   .fw-row2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .fw-row3 { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 0.8fr); }
-  .fw-if-row { grid-template-columns: 62px 44px minmax(0, 1fr) 134px; }
+  .fw-if-row { grid-template-columns: 62px 44px minmax(0, 1fr); }
   .rl-row { grid-template-columns: minmax(0, 1.4fr) 74px 92px 28px; }
   .uf-row { grid-template-columns: minmax(0, 1fr) auto 28px; }
   .num { font-family: var(--font-mono); font-size: 12px; color: var(--ink-faint); }
@@ -679,7 +679,6 @@ export class NsInspector extends HTMLElement {
     const kv = el('dl', 'kv');
     kv.innerHTML = `
       <dt>Public block</dt><dd>${d.publicSubnet}</dd>
-      <dt>Mask</dt><dd>/${c.prefix} (${subnetMask(c.prefix)})</dd>
       <dt>ISP gateway</dt><dd>${d.uplinkIp}</dd>
       <dt>Your addresses</dt><dd>${publicIps(s)[0]} – ${publicIps(s).slice(-1)[0]} (${size - 3})</dd>`;
     const info = section('Internet connection', kv,
@@ -690,9 +689,9 @@ export class NsInspector extends HTMLElement {
       info.appendChild(btn(`Buy a bigger block: /${nb.prefix} (${cnt} addresses) · $${nb.price.toLocaleString()}`, () => {
         const err = buyBiggerBlock();
         if (err) toast(err, 'error');
-        else toast(`Your public block is now ${nb.subnet}. Widen the mask on your edge device (/${nb.prefix}) to use the new addresses.`, 'good');
+        else toast(`Your public block is now ${nb.subnet}. Change your edge device's outside address to /${nb.prefix} to use the new addresses.`, 'good');
       }, 'add', `Becomes ${nb.subnet}. It contains your current block, so nothing in use changes.`));
-      info.appendChild(el('p', 'sub', `Becomes ${nb.subnet}: your current addresses stay. To use the new ones, set the mask of your edge device's outside interface to /${nb.prefix}.`));
+      info.appendChild(el('p', 'sub', `Becomes ${nb.subnet}: your current addresses stay. To use the new ones, give your edge device's outside address the prefix /${nb.prefix}.`));
     } else info.appendChild(el('p', 'sub', 'This is the biggest block your ISP offers.'));
 
     const bw = () => Math.max(1, (world.get().devices[d.id] as DeviceOf<'uplink'>).bandwidthMbps);
@@ -747,17 +746,13 @@ export class NsInspector extends HTMLElement {
     netSec.appendChild(mode);
     if (d.addressing === 'dhcp') {
       const kv = el('dl', 'kv');
-      kv.innerHTML = `<dt>Leased IP</dt><dd>${d.ip || 'waiting…'}</dd><dt>Mask</dt><dd>${d.ip ? d.mask : '—'}</dd><dt>Gateway</dt><dd>${d.gateway || '—'}</dd>`;
+      kv.innerHTML = `<dt>Leased address</dt><dd>${d.ip ? addrText(d.ip, d.mask) : 'waiting…'}</dd><dt>Gateway</dt><dd>${d.gateway || '—'}</dd>`;
       netSec.appendChild(kv);
       if (!d.ip) netSec.appendChild(el('p', 'note warn-t', 'No lease. Enable a DHCP pool on the router or firewall interface on this segment.'));
     } else {
-      netSec.appendChild(makeField('IP address', d.ip, {
-        id: 'srv-ip', placeholder: '192.168.10.10', check: checkIp(d.ip) ?? duplicateCheck(s, d.ip, d.name),
-        onCommit: (v) => edit((x) => { x.ip = v; }),
-      }));
-      netSec.appendChild(makeField('Subnet mask', d.mask, {
-        id: 'srv-mask', placeholder: '255.255.255.0 or /24', check: checkMask(d.mask),
-        onCommit: (v) => edit((x) => { x.mask = v; }),
+      netSec.appendChild(makeField('Address', addrText(d.ip, d.mask), {
+        id: 'srv-ip', placeholder: '192.168.10.10/24', check: checkAddr(d.ip, d.mask) ?? duplicateCheck(s, d.ip, d.name),
+        onCommit: (v) => this.commitAddr(v, (ip, mask) => edit((x) => { x.ip = ip; x.mask = mask; })),
       }));
       netSec.appendChild(makeField('Gateway', d.gateway, {
         id: 'srv-gw', placeholder: '192.168.10.1', check: serverGatewayCheck(d as DeviceOf<'server'>),
@@ -775,13 +770,9 @@ export class NsInspector extends HTMLElement {
       d.extra.forEach((x, i) => {
         const n = i + 1;
         netSec.appendChild(el('h3', undefined, `eth${n} · extra network`));
-        netSec.appendChild(makeField(`eth${n} IP`, x.ip, {
-          id: `srv-ip${n}`, placeholder: `10.10.${n - 1}.10`, check: checkIp(x.ip, 'Not used') ?? duplicateCheck(s, x.ip, `${d.name} eth${n}`),
-          onCommit: (v) => editDevice(d.id, 'server', (y) => { const e = y.extra[i]; if (e) e.ip = v; }),
-        }));
-        netSec.appendChild(makeField(`eth${n} mask`, x.mask, {
-          id: `srv-mask${n}`, placeholder: '/24', check: x.ip ? checkMask(x.mask) : null,
-          onCommit: (v) => editDevice(d.id, 'server', (y) => { const e = y.extra[i]; if (e) e.mask = v; }),
+        netSec.appendChild(makeField(`eth${n} address`, addrText(x.ip, x.mask), {
+          id: `srv-ip${n}`, placeholder: `10.10.${n - 1}.10/24`, check: checkAddr(x.ip, x.mask, 'Not used') ?? duplicateCheck(s, x.ip, `${d.name} eth${n}`),
+          onCommit: (v) => this.commitAddr(v, (ip, mask) => editDevice(d.id, 'server', (y) => { const e = y.extra[i]; if (e) { e.ip = ip; e.mask = mask; } })),
         }));
       });
       if (d.extra.length) netSec.appendChild(el('p', 'note', 'Extra ports have no gateway: they only reach their own subnet. Ideal for orchestrator ↔ GPU and storage traffic.'));
@@ -1068,6 +1059,13 @@ export class NsInspector extends HTMLElement {
     return box;
   }
 
+  /** Commit an address typed as "ip/prefix"; complain instead of saving half of it. */
+  private commitAddr(v: string, save: (ip: string, mask: string) => void): void {
+    const r = parseAddr(v);
+    if (typeof r === 'string') { toast(r, 'error'); this.schedule(); return; }
+    save(r.ip, r.mask);
+  }
+
   private monitorStatus(id: string): HTMLElement {
     return this.liveBlock(() => {
       const st = world.get();
@@ -1332,17 +1330,15 @@ export class NsInspector extends HTMLElement {
     ifSec.appendChild(el('p', 'note', 'Each port is its own subnet. The router\'s IP on a port is the gateway for devices on that side.'));
     for (const itf of d.interfaces) {
       const label = d.ports[itf.port]!.label;
-      const ipCheck = checkIp(itf.ip, '') ?? duplicateCheck(s, itf.ip, `${d.name} ${label}`);
-      const maskCheck = itf.ip ? checkMask(itf.mask) : null;
+      const ipCheck = (itf.ip ? checkAddr(itf.ip, itf.mask) : null) ?? duplicateCheck(s, itf.ip, `${d.name} ${label}`);
       const row = el('div', 'row if-row');
       const pl = el('span', 'pl');
       pl.innerHTML = `${label}<br><span class="side">${SIDE_NAME[portSide(d, itf.port)]}</span>`;
       row.appendChild(pl);
-      row.appendChild(makeInput(`rt-${itf.port}-ip`, itf.ip, { placeholder: 'unassigned', ariaLabel: `${label} IP`, check: ipCheck, onCommit: (v) => edit((x) => { x.interfaces[itf.port]!.ip = v; }) }));
-      row.appendChild(makeInput(`rt-${itf.port}-mask`, itf.mask, { placeholder: '/24', ariaLabel: `${label} mask`, check: maskCheck, onCommit: (v) => edit((x) => { x.interfaces[itf.port]!.mask = v; }) }));
+      row.appendChild(makeInput(`rt-${itf.port}-ip`, addrText(itf.ip, itf.mask), { placeholder: 'unassigned, e.g. 192.168.10.1/24', ariaLabel: `${label} address`, check: ipCheck, onCommit: (v) => this.commitAddr(v, (ip, mask) => edit((x) => { x.interfaces[itf.port]!.ip = ip; x.interfaces[itf.port]!.mask = mask; })) }));
       ifSec.appendChild(row);
       if (s.unlocks.dhcp && itf.ip) ifSec.appendChild(makeCheck(`rt-${itf.port}-dhcp`, ` DHCP server on ${label}`, itf.dhcp.enabled, (v) => edit((x) => { x.interfaces[itf.port]!.dhcp.enabled = v; })));
-      const msgs = makeMsgs([ipCheck, maskCheck, overlapCheck(d, itf.port)]);
+      const msgs = makeMsgs([ipCheck, overlapCheck(d, itf.port)]);
       if (msgs) ifSec.appendChild(msgs);
     }
     if (!s.unlocks.dhcp) ifSec.appendChild(el('p', 'locked', `DHCP server: ${lockedMsg('dhcp')}`));
@@ -1411,8 +1407,7 @@ export class NsInspector extends HTMLElement {
     }));
     const net: HTMLElement[] = [];
     const n = section('Network');
-    n.appendChild(makeField('IP address', d.ip, { id: 'bd-ip', placeholder: '192.168.10.60', check: checkIp(d.ip) ?? duplicateCheck(s, d.ip, d.name), onCommit: (v) => edit((x) => { x.ip = v; }) }));
-    n.appendChild(makeField('Subnet mask', d.mask, { id: 'bd-mask', placeholder: '/24', check: checkMask(d.mask), onCommit: (v) => edit((x) => { x.mask = v; }) }));
+    n.appendChild(makeField('Address', addrText(d.ip, d.mask), { id: 'bd-ip', placeholder: '192.168.10.60/24', check: checkAddr(d.ip, d.mask) ?? duplicateCheck(s, d.ip, d.name), onCommit: (v) => this.commitAddr(v, (ip, mask) => edit((x) => { x.ip = ip; x.mask = mask; })) }));
     n.appendChild(makeField('Gateway', d.gateway, { id: 'bd-gw', placeholder: '192.168.10.1', onCommit: (v) => edit((x) => { x.gateway = v; }) }));
     net.push(n);
     return [sec, ...net];
@@ -1480,14 +1475,12 @@ export class NsInspector extends HTMLElement {
         placeholder: '0-100', ariaLabel: `${iface.name} security level`,
         onCommit: (v) => { const n = Number(v); if (Number.isFinite(n) && n >= 0 && n <= 100) edit((x) => { const f = x.interfaces.find((i) => i.port === iface.port); if (f) f.securityLevel = Math.round(n); }); else toast('Security level must be 0–100', 'error'); },
       }));
-      const ipCheck = checkIp(iface.ip, '') ?? duplicateCheck(s, iface.ip, `${d.name} ${iface.name}`);
-      row.appendChild(makeInput(`fw-if-${iface.port}-ip`, iface.ip, { placeholder: 'unassigned', ariaLabel: `${iface.name} IP`, check: ipCheck, onCommit: (v) => edit((x) => { const f = x.interfaces.find((i) => i.port === iface.port); if (f) f.ip = v; }) }));
-      const maskCheck = iface.ip ? checkMask(iface.mask) : null;
-      row.appendChild(makeInput(`fw-if-${iface.port}-mask`, iface.mask, { placeholder: '/24', ariaLabel: `${iface.name} mask`, check: maskCheck, onCommit: (v) => edit((x) => { const f = x.interfaces.find((i) => i.port === iface.port); if (f) f.mask = v; }) }));
+      const ipCheck = (iface.ip ? checkAddr(iface.ip, iface.mask) : null) ?? duplicateCheck(s, iface.ip, `${d.name} ${iface.name}`);
+      row.appendChild(makeInput(`fw-if-${iface.port}-ip`, addrText(iface.ip, iface.mask), { placeholder: 'unassigned, e.g. 10.0.0.1/30', ariaLabel: `${iface.name} address`, check: ipCheck, onCommit: (v) => this.commitAddr(v, (ip, mask) => edit((x) => { const f = x.interfaces.find((i) => i.port === iface.port); if (f) { f.ip = ip; f.mask = mask; } })) }));
       card.appendChild(row);
       card.appendChild(el('span', 'sub', `${d.ports[iface.port]?.label} port · ${SIDE_NAME[portSide(d, iface.port)]} side · level ${iface.securityLevel}`));
       if (s.unlocks.dhcp && iface.ip) card.appendChild(makeCheck(`fw-if-${iface.port}-dhcp`, ` DHCP server on ${iface.name}`, iface.dhcp.enabled, (v) => edit((x) => { const f = x.interfaces.find((i) => i.port === iface.port); if (f) f.dhcp.enabled = v; })));
-      const m = makeMsgs([ipCheck, maskCheck]);
+      const m = makeMsgs([ipCheck]);
       if (m) card.appendChild(m);
       ifSec.appendChild(card);
     }
@@ -1756,10 +1749,6 @@ function editL3(id: string, fn: (x: RouterDevice | FirewallDevice) => void): voi
   else if (d?.kind === 'firewall') editDevice(id, 'firewall', fn);
 }
 
-function subnetMask(prefix: number): string {
-  const m = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-  return [24, 16, 8, 0].map((sh) => (m >>> sh) & 255).join('.');
-}
 
 export function fmtTime(tick: number): string {
   const s = Math.floor(tick / TICKS_PER_SEC);

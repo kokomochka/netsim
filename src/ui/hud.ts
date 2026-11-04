@@ -488,7 +488,7 @@ export class NsGoals extends HTMLElement {
       intro.className = 'intro';
       intro.textContent = s.meta.sandbox
         ? 'This is the example network: a sandbox that does not award goals. Start a new game from the Game menu to play the career.'
-        : 'Everything starts manual: you type every IP, mask, gateway, route, NAT entry and rule yourself. Each goal proves a skill and unlocks the automation that replaces it.';
+        : 'Everything starts manual: you type every address (like 192.168.10.10/24), gateway, route, NAT entry and rule yourself. Each goal proves a skill and unlocks the automation that replaces it.';
       this.body.appendChild(intro);
       const unl = document.createElement('div');
       unl.className = 'unl';

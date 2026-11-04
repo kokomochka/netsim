@@ -791,7 +791,7 @@ function syncServerPortsSim(state: WorldState, x: ServerDevice): void {
     x.ports.push({ index: i, side: layout[i]!.side, offset: 0.5, label: layout[i]!.label, up: true, media: 'copper' });
   }
   x.ports.length = n;
-  while (x.extra.length < n - 1) x.extra.push({ ip: '', mask: '255.255.255.0' });
+  while (x.extra.length < n - 1) x.extra.push({ ip: '', mask: '/24' });
   x.extra.length = n - 1;
   for (const c of x.hw.comps) if (c.kind === 'nic') { const p = x.ports[c.slot]; if (p) p.up = !c.failed; }
   void state;

@@ -656,7 +656,7 @@ export function syncServerPorts(x: Extract<Device, { kind: 'server' }>): void {
     x.ports.push({ index: i, side: l.side, offset: 0.5, label: l.label, up: true, media: 'copper' });
   }
   x.ports.length = n;
-  while (x.extra.length < n - 1) x.extra.push({ ip: '', mask: '255.255.255.0' });
+  while (x.extra.length < n - 1) x.extra.push({ ip: '', mask: '/24' });
   x.extra.length = n - 1;
   recomputeAllPaths(world.get());
 }

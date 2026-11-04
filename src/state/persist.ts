@@ -1,3 +1,4 @@
+import { normMask } from './ip';
 // Save / load (architecture v2, §11). Phase 2: migration from v1→v2.
 import { START_BALANCE, UPTIME_BUCKETS } from '../balance';
 import { get, set } from '../lib/idb-keyval';
@@ -357,6 +358,11 @@ export function deserialize(json: string): WorldState | null {
     state.cables ??= {} as any;
     state.camera ??= { x: 0, y: 0, scale: 1 };
     splitProxyRules(state);
+    for (const d of Object.values(state.devices) as any[]) {
+      if (typeof d.mask === 'string') d.mask = normMask(d.mask);
+      for (const i of d.interfaces ?? []) if (typeof i.mask === 'string') i.mask = normMask(i.mask);
+      for (const x of d.extra ?? []) if (typeof x.mask === 'string') x.mask = normMask(x.mask);
+    }
     // older saves: a site that is serving (or has been) counts toward uptime
     for (const v of Object.values(state.services ?? {})) v.live ??= v.upTicks > 0 || v.availability >= 0.5 || v.reputation !== 1;
     recomputeAllPaths(state);

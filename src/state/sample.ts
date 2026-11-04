@@ -32,8 +32,8 @@ export function sampleWorld(): WorldState {
   uplink.gridPos = { gx: 1, gy: 4 };
 
   const fw = place('firewall', 'Edge-FW', 4, 4);
-  fw.interfaces[0]!.ip = '203.0.113.2'; fw.interfaces[0]!.mask = '255.255.255.240';
-  fw.interfaces[1]!.ip = '10.0.0.1'; fw.interfaces[1]!.mask = '255.255.255.252';
+  fw.interfaces[0]!.ip = '203.0.113.2'; fw.interfaces[0]!.mask = '/28';
+  fw.interfaces[1]!.ip = '10.0.0.1'; fw.interfaces[1]!.mask = '/30';
   fw.routes = [
     { id: `rt_${s.nextId++}`, dest: '0.0.0.0/0', nextHop: '203.0.113.1', metric: 1 },
     { id: `rt_${s.nextId++}`, dest: '192.168.10.0/24', nextHop: '10.0.0.2', metric: 1 },
@@ -48,15 +48,15 @@ export function sampleWorld(): WorldState {
   fw.defaultPolicy = 'deny';
 
   const rt = place('router', 'Core-RT', 7, 4);
-  rt.interfaces[3]!.ip = '10.0.0.2'; rt.interfaces[3]!.mask = '255.255.255.252';
-  rt.interfaces[1]!.ip = '192.168.10.1'; rt.interfaces[1]!.mask = '255.255.255.0';
+  rt.interfaces[3]!.ip = '10.0.0.2'; rt.interfaces[3]!.mask = '/30';
+  rt.interfaces[1]!.ip = '192.168.10.1'; rt.interfaces[1]!.mask = '/24';
   rt.routes = [{ id: `rt_${s.nextId++}`, dest: '0.0.0.0/0', nextHop: '10.0.0.1', metric: 1 }];
 
   const sw = place('switch', 'Rack-SW', 10, 4);
   const web1 = place('server', 'web-01', 9, 7);
-  web1.ip = '192.168.10.10'; web1.mask = '255.255.255.0'; web1.gateway = '192.168.10.1';
+  web1.ip = '192.168.10.10'; web1.mask = '/24'; web1.gateway = '192.168.10.1';
   const web2 = place('server', 'web-02', 12, 7);
-  web2.ip = '192.168.10.11'; web2.mask = '255.255.255.0'; web2.gateway = '192.168.10.1';
+  web2.ip = '192.168.10.11'; web2.mask = '/24'; web2.gateway = '192.168.10.1';
 
   const cable = (a: string, ap: number, b: string, bp: number, type: CableType = 'ethernet') => {
     const cid = `cab_${s.nextId++}`;
@@ -81,7 +81,7 @@ export function sampleWorld(): WorldState {
     s.publicAddrs[pid] = { id: pid, ip, services: [sid] };
   }
   // office: two desks on their own subnet behind the core router
-  rt.interfaces[2]!.ip = '192.168.20.1'; rt.interfaces[2]!.mask = '255.255.255.0';
+  rt.interfaces[2]!.ip = '192.168.20.1'; rt.interfaces[2]!.mask = '/24';
   const osw = place('switch', 'Office-SW', 15, 8);
   const d1 = place('desk', 'Desk-1', 14, 3);
   d1.ip = '192.168.20.10'; d1.gateway = '192.168.20.1';

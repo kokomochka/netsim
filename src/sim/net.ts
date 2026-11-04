@@ -591,7 +591,7 @@ export function resolveFromHost(ctx: NetCtx, host: Device, dst: number, proto: P
   const own = own0;
   if (parseIp(host.ip) === null || !own) {
     h.note = 'has no IP address';
-    return b.block('no_ip', `${host.name} has no valid IP and mask on eth0.`);
+    return b.block('no_ip', `${host.name} has no valid address on eth0 (like 192.168.10.10/24).`);
   }
   if (host.health.state === 'failed') return b.block('device_failed', `${host.name} is down.`);
   let nh: number;
@@ -689,7 +689,6 @@ export function resolveFlow(ctx: NetCtx, flow: Flow): ResolvedPath {
 
 // ─── Topology services: DHCP and OSPF ───────────────────────────────────────
 
-const maskText = (prefix: number) => ipStr(prefixToMask(prefix));
 
 /** Give DHCP servers' clients an address. Mutates server ip/mask/gateway. */
 export function runDhcp(ctx: NetCtx): void {
@@ -712,7 +711,7 @@ export function runDhcp(ctx: NetCtx): void {
         const off = leases.get(key) ?? 100;
         leases.set(key, off + 1);
         srv.ip = ipStr((net.net + off) >>> 0);
-        srv.mask = maskText(net.prefix);
+        srv.mask = `/${net.prefix}`;
         srv.gateway = itf.ip.trim();
         leased = true;
         break;

@@ -41,7 +41,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     goal: 'Get one website answering visitors from the internet for 10 seconds.',
     how: (s) => { const b = block(s); return [
       'Pick the Cable tool and run a cable from the ISP uplink to Server-1.',
-      `Open Server-1. Give it a free address from your public block ${b.subnet}, e.g. ${b.host(2)}, mask /${b.prefix} (${b.mask}).`,
+      `Open Server-1. Give it a free address from your public block ${b.subnet}, e.g. ${b.host(2)}/${b.prefix}.`,
       `Set its gateway to the ISP router, ${b.gateway}.`,
       'Under Roles, add Website.',
       `Open the Internet tab, add ${b.host(2)} under Public IPs and tick Server-1's website.`,
@@ -117,7 +117,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     id: 'address_book',
     title: 'Address book',
     goal: 'Run public services on 4 servers at once, all addressed by hand.',
-    how: ['Every server needs a unique IP, the right mask and a gateway. Keep a list: duplicates break things.'],
+    how: ['Every server needs a unique address with the right prefix (like /24) and a gateway. Keep a list: duplicates break things.'],
     reward: 'Unlocks DHCP: routers and firewalls can hand out addresses.',
     unlocks: ['dhcp'],
     target: 4,
