@@ -146,6 +146,8 @@ export type RoleKind =
 
 export interface ProxyRule { id: string; fqdn: string; backend: string }   // backend: internal name or IP
 export interface DnsRecord { id: string; name: string; ip: string }
+/** One address a monitoring master polls: a server's agent, or SNMP on network gear. */
+export interface MonTarget { id: string; ip: string; method: 'agent' | 'snmp' }
 
 export interface ServerRole {
   role: RoleKind;
@@ -154,6 +156,7 @@ export interface ServerRole {
   links: DeviceId[];             // back ends this role talks to (storage, orchestrator, GPU workers)
   rules?: ProxyRule[];           // reverse proxy: which name goes to which back end
   records?: DnsRecord[];         // local DNS: internal names
+  targets?: MonTarget[];         // monitoring master: addresses it polls
   upstream?: DeviceId | 'direct';  // update mirror: how it reaches the internet
 }
 
@@ -202,7 +205,7 @@ export interface ServerHw {
 export interface ServerAgents {
   backup: { enabled: boolean; targetId: DeviceId | null; lastOk?: number };   // NAS to back up to; tick of the last good copy
   failover: { enabled: boolean; partnerId: DeviceId | null; sanId: DeviceId | null };
-  monitor?: { enabled: boolean; masterId: DeviceId | null };        // reports to a monitoring master
+  monitor?: { enabled: boolean; masterIp: string };              // agent on tcp/10050, answers polls only from this master IP
 }
 
 export interface ServerDevice extends DeviceBase {
@@ -416,6 +419,7 @@ export interface Flow {
   tag?: string;                  // identity of internal control traffic (ssh:job, ldap:door…)
   syn: boolean;                  // half-open SYN flood
   rateMbps: number;
+  healthCheck?: boolean;         // trickle to a dead endpoint while healthy ones carry the load
   serviceId: ServiceId | null;
   incidentId: IncidentId | null;
 }
@@ -440,6 +444,7 @@ export interface Service {
   downSinceTick: number | null;
   downPenalised: boolean;        // reputation hit taken for the current outage
   upTicks: number;               // consecutive ticks ≥ 99 %
+  live?: boolean;                // has served visitors at least once: only then it counts toward uptime
   flowId: FlowId | null;
 }
 
@@ -573,6 +578,9 @@ export interface RuntimeCache {
   delivery: Record<FlowId, number>;              // 0–1 after congestion
   talkers: Record<DeviceId, TalkerRow[]>;        // flows seen by each device
   ruleHits: Record<string, number>;              // `${devId}:${ruleId}` → Mbps matching now
+  ruleHitCount?: Record<string, number>;        // sessions that have matched since load (like an ASA hitcnt)
+  ruleLastHit?: Record<string, number>;         // tick of the most recent match
+  ruleSeen?: Record<string, true>;              // `${flowId}|${rule}` already counted
   learned: Record<DeviceId, (Route & { via: string })[]>;  // OSPF routes
   carriers: Carrier[];
   topologyVersion: number;
@@ -592,6 +600,9 @@ export interface RuntimeCache {
   monitored?: Record<DeviceId, string>;          // device → master that hears from it
   consoles?: Record<DeviceId, DeviceId>;         // desk → master whose web console it can open
   monWhy?: Record<DeviceId, string>;             // why a device is not monitored
+  monSeen?: Record<DeviceId, string>;           // device → master that has had an answer from it since load
+  monSilent?: Record<DeviceId, true>;           // answered before, not now: the master raises an alert
+  monTargets?: Record<string, { ok: boolean; msg: string }>;   // `${masterId}:${targetId}` → last poll
 }
 
 // ─── Floor plan and people ──────────────────────────────────────────────────

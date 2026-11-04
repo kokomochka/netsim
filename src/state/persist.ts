@@ -258,7 +258,7 @@ const MIGRATIONS: Record<number, (s: any) => any> = {
         d.specs = specsFor(p);
         d.hw = freshHw(p);
         for (const c of d.hw.comps) { c.age = 600; c.wear = Math.max(0, (100 - (d.health?.hp ?? 100)) / 100); }
-        d.agents.monitor ??= { enabled: false, masterId: null };
+        d.agents.monitor ??= { enabled: false, masterId: null }; // v11 shape, upgraded by v11→v12
         d.cert ??= false;
       } else {
         d.wear = Math.max(0, (100 - (d.health?.hp ?? 100)) / 100);
@@ -269,6 +269,33 @@ const MIGRATIONS: Record<number, (s: any) => any> = {
     s.events = (s.events ?? []).filter((e: any) => e.kind !== 'hardware_failure');
     s.known = {};
     s.unlocks.throttling ??= false;
+    return s;
+  },
+  // v11→v12: monitoring polls typed addresses. Agents keep their master's IP,
+  // masters get a target list matching what they watched before.
+  11: (s: any) => {
+    const devs = Object.values(s.devices) as any[];
+    const ipOf = (d: any): string => d?.ip || (d?.interfaces ?? []).find((i: any) => i.ip)?.ip || '';
+    let n = 0;
+    const isMaster = (d: any) => d.kind === 'server' && (d.roles ?? []).some((r: any) => r.role === 'monitor');
+    const firstMaster = devs.find((d) => isMaster(d) && d.ip);
+    for (const m of devs.filter(isMaster)) {
+      const role = m.roles.find((r: any) => r.role === 'monitor');
+      role.port = 80;
+      const targets: any[] = [];
+      for (const d of devs) {
+        if (d.kind === 'server' && d.id !== m.id && d.agents?.monitor?.enabled && d.agents.monitor.masterId === m.id && d.ip) targets.push({ id: `mt_m${n++}`, ip: d.ip, method: 'agent' });
+        if (m === firstMaster && !['server', 'uplink', 'ac', 'switch', 'ddos_scrubber'].includes(d.kind) && ipOf(d)) targets.push({ id: `mt_m${n++}`, ip: ipOf(d), method: 'snmp' });
+      }
+      role.targets = targets;
+    }
+    for (const d of devs) {
+      if (d.kind !== 'server' || !d.agents) continue;
+      const old = d.agents.monitor ?? { enabled: false, masterId: null };
+      d.agents.monitor = { enabled: !!old.enabled, masterIp: old.masterId ? s.devices[old.masterId]?.ip ?? '' : '' };
+      for (const r of d.roles ?? []) if (r.role === 'cloud' || r.role === 'ai_frontend') r.port = 80;
+    }
+    for (const v of Object.values(s.services ?? {}) as any[]) if (v.kind === 'cloud' || v.kind === 'ai') v.port = 80;
     return s;
   },
 };
@@ -330,6 +357,8 @@ export function deserialize(json: string): WorldState | null {
     state.cables ??= {} as any;
     state.camera ??= { x: 0, y: 0, scale: 1 };
     splitProxyRules(state);
+    // older saves: a site that is serving (or has been) counts toward uptime
+    for (const v of Object.values(state.services ?? {})) v.live ??= v.upTicks > 0 || v.availability >= 0.5 || v.reputation !== 1;
     recomputeAllPaths(state);
     resetRuntime();
     return state;

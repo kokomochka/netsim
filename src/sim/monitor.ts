@@ -2,20 +2,23 @@
 //
 //  • A problem is unknown until someone notices it. Engineers see blinking
 //    LEDs on anything within two cells of them.
-//  • Monitoring needs a server with the Monitoring master role. Servers report
-//    to it through a monitoring agent (tcp/10051); network devices with an IP
-//    are polled over SNMP (udp/161); switches and scrubbers are covered when a
-//    monitoring flow passes through them. A monitored problem raises an alert.
+//  • Monitoring polls. A server with the Monitoring master role polls each
+//    address in its target list: server agents on tcp/10050 (the agent only
+//    answers the master IP typed into it), network gear over SNMP (udp/161).
+//    The request and the reply both have to make it through routes and
+//    firewalls. Switches and scrubbers have no address; the master sees them
+//    while answers cross them.
+//  • A device that answered before and goes quiet raises a "stopped answering"
+//    alert, which is how a dead box is found. Wear readings (SMART) only come
+//    with a live answer.
 //  • Staff act on an alert once one engineer has seen it: sitting at a desk
 //    whose PC can open the master's web console (tcp/80), or standing next to
 //    the device. Whoever is free then goes to fix it.
-//  • With the "Predictive alerts" unlock, monitored parts report wear before
-//    they fail (SMART).
 
 import { MON_AGENT_PORT, MON_CONSOLE_PORT, NOTICE_RADIUS, ROLES, SNMP_PORT, TICKS_PER_SEC, WORN } from '../balance';
 import { cheb } from '../state/floor';
 import { parseIp } from '../state/ip';
-import type { Device, DeviceId, Flow, RuntimeCache, ServerDevice, WorldState } from '../state/types';
+import type { Device, DeviceId, Flow, MonTarget, RuntimeCache, ServerDevice, WorldState } from '../state/types';
 import { compName, OFF_LABEL } from './hw';
 import { buildCtx, l3Ifaces, resolveFromHost } from './net';
 
@@ -102,64 +105,97 @@ function firstIp(d: Device): string {
   return '';
 }
 
-/** Monitoring control flows: agents report in, the master polls network gear. */
+/** Which device owns an address (host IP, extra server IP, router / firewall interface). */
+export function ownerOfIp(s: WorldState, ip: string): Device | undefined {
+  const want = parseIp(ip.trim());
+  if (want === null) return undefined;
+  return Object.values(s.devices).find((d) => {
+    if ('ip' in d && parseIp(d.ip) === want) return true;
+    if (d.kind === 'server' && d.extra.some((x) => parseIp(x.ip) === want)) return true;
+    if (d.kind === 'router' || d.kind === 'firewall') return d.interfaces.some((i) => parseIp(i.ip) === want);
+    return false;
+  });
+}
+
+export const targetsOf = (m: ServerDevice) => m.roles.find((r) => r.role === 'monitor')?.targets ?? [];
+const pollTag = (m: ServerDevice, t: MonTarget) => `poll:${m.id}:${t.id}`;
+
+/** Polling model: each master polls the addresses in its target list, and the
+ *  device answers back. Server agents listen on tcp/10050, network gear on udp/161. */
 export function monitorFlows(s: WorldState, want: Map<string, Omit<Flow, 'id'>>, add: (tag: string, origin: string, dstIp: string, protocol: 'tcp' | 'udp', dstPort: number, rateMbps: number) => void): void {
   void want;
-  const ms = masters(s);
-  if (!ms.length) return;
-  for (const d of Object.values(s.devices)) {
-    if (d.kind === 'server') {
-      const a = d.agents.monitor;
-      const m = a?.enabled && a.masterId ? s.devices[a.masterId] : undefined;
-      if (isMaster(m) && m.id !== d.id && m.ip) add(`mon:${d.id}`, d.id, m.ip, 'tcp', MON_AGENT_PORT, 0.3);
+  for (const m of masters(s)) {
+    if (!upOk(m) || !m.ip) continue;
+    for (const t of targetsOf(m)) {
+      if (parseIp(t.ip.trim()) === null) continue;
+      add(pollTag(m, t), m.id, t.ip.trim(), t.method === 'agent' ? 'tcp' : 'udp', t.method === 'agent' ? MON_AGENT_PORT : SNMP_PORT, 0.15);
     }
-  }
-  // the first master polls every network device that has an address
-  const m = ms.find((x) => upOk(x) && x.ip);
-  if (!m) return;
-  for (const d of Object.values(s.devices)) {
-    if (d.kind === 'server' || d.kind === 'uplink' || d.kind === 'ac') continue;
-    const ip = firstIp(d);
-    if (ip) add(`snmp:${d.id}`, m.id, ip, 'udp', SNMP_PORT, 0.1);
   }
 }
 
-/** Who reports to a working master, and which desks can open its console. Every 2 s. */
+/** Who answers a working master's polls, and which desks can open its console. Every 2 s. */
 export function refreshMonitoring(s: WorldState, c: RuntimeCache): void {
   const mon: Record<DeviceId, string> = {};
   const why: Record<DeviceId, string> = {};
+  const seen = (c.monSeen ??= {});
+  const wasSilent = c.monSilent ?? {};
+  const silent: Record<DeviceId, true> = {};
+  const tstat: Record<string, { ok: boolean; msg: string }> = {};
   const ms = masters(s).filter(upOk);
   for (const m of ms) mon[m.id] = m.id;
   const flowFor = (tag: string) => Object.values(s.flows).find((f) => f.kind === 'control' && f.tag === tag);
+  const l2 = (id: string) => { const d = s.devices[id]; return d?.kind === 'switch' || d?.kind === 'ddos_scrubber'; };
+  const failed: { m: ServerDevice; owner: Device; msg: string }[] = [];
+  for (const m of ms) {
+    for (const t of targetsOf(m)) {
+      const key = `${m.id}:${t.id}`;
+      if (parseIp(t.ip.trim()) === null) { tstat[key] = { ok: false, msg: t.ip.trim() ? 'Not a valid IP address' : 'Type the address to poll' }; continue; }
+      const owner = ownerOfIp(s, t.ip);
+      const f = flowFor(pollTag(m, t));
+      const p = f ? c.paths[f.id] : undefined;
+      const dev = p?.reachedServer ? s.devices[p.reachedServer] : undefined;
+      if (p && !p.blocked && dev && p.ret && !p.ret.blocked) {
+        mon[dev.id] = m.id;
+        seen[dev.id] = m.id;
+        delete why[dev.id];
+        // switches and scrubbers have no address: the master sees them while answers cross them
+        for (const h of [...p.hops, ...p.ret.hops]) if (l2(h.deviceId)) { mon[h.deviceId] = m.id; seen[h.deviceId] = m.id; }
+        tstat[key] = { ok: true, msg: `${dev.name} answers (${t.method === 'agent' ? `agent tcp/${MON_AGENT_PORT}` : `SNMP udp/${SNMP_PORT}`})` };
+        continue;
+      }
+      const msg = !m.ip ? `${m.name} has no IP` : !owner ? `Nothing owns ${t.ip.trim()}` : !p ? 'Waiting for the first poll' : p.blocked ? `No answer: ${p.explain}` : !p.ret ? 'No answer' : `No answer: ${p.explain}`;
+      tstat[key] = { ok: false, msg };
+      if (owner) failed.push({ m, owner, msg });
+    }
+  }
+  for (const { m, owner, msg } of failed) {
+    if (mon[owner.id]) continue;
+    why[owner.id] = `${m.name}: ${msg}`;
+    // it answered before and went quiet: that is what the master alerts on
+    if (seen[owner.id] === m.id) { mon[owner.id] = m.id; silent[owner.id] = true; }
+  }
+  // switches and scrubbers that answers used to cross: a dead one is noticed by what went quiet behind it
+  for (const [id, m] of Object.entries(seen)) {
+    if (mon[id] || !l2(id) || !ms.some((x) => x.id === m)) continue;
+    mon[id] = m; silent[id] = true;
+  }
   for (const d of Object.values(s.devices)) {
-    if (mon[d.id]) continue;
-    if (d.kind === 'server') {
-      const a = d.agents.monitor;
-      if (!a?.enabled) { why[d.id] = 'No monitoring agent'; continue; }
-      const m = a.masterId ? s.devices[a.masterId] : undefined;
-      if (!isMaster(m)) { why[d.id] = 'Pick a server running the Monitoring master role'; continue; }
-      if (!upOk(m)) { why[d.id] = `${m.name} is down`; continue; }
-      const f = flowFor(`mon:${d.id}`);
-      const p = f ? c.paths[f.id] : undefined;
-      if (p && !p.blocked && p.reachedServer === m.id) mon[d.id] = m.id;
-      else why[d.id] = p ? `Agent cannot reach ${m.name} on tcp/${MON_AGENT_PORT}: ${p.explain}` : 'Waiting for the agent to report';
-    } else if (d.kind !== 'uplink') {
-      const f = flowFor(`snmp:${d.id}`);
-      const p = f ? c.paths[f.id] : undefined;
-      if (p && !p.blocked && p.reachedServer === d.id) mon[d.id] = f!.origin;
-      else why[d.id] = !ms.length ? 'No Monitoring master' : !firstIp(d) && d.kind !== 'switch' && d.kind !== 'ddos_scrubber' ? 'No IP address to poll' : p ? `SNMP poll fails: ${p.explain}` : 'Not polled';
-    }
+    if (mon[d.id] || why[d.id] || d.kind === 'uplink' || d.kind === 'ac') continue;
+    why[d.id] = !ms.length ? 'No working Monitoring master'
+      : d.kind === 'switch' || d.kind === 'ddos_scrubber' ? 'No answered poll crosses it yet (it has no address of its own)'
+      : d.kind === 'server' && !d.agents.monitor?.enabled ? `No monitoring agent: turn it on and add ${d.ip || 'its IP'} to a master's targets`
+      : !firstIp(d) ? 'No IP address to poll'
+      : `Not in any master's target list: add ${firstIp(d)} to the Monitoring master`;
   }
-  // L2 boxes (no IP) are covered when a working monitoring flow passes through them
-  for (const f of Object.values(s.flows)) {
-    if (f.kind !== 'control' || !(f.tag?.startsWith('mon:') || f.tag?.startsWith('snmp:'))) continue;
-    const p = c.paths[f.id];
-    if (!p || p.blocked) continue;
-    for (const h of p.hops) {
-      const d = s.devices[h.deviceId];
-      if ((d?.kind === 'switch' || d?.kind === 'ddos_scrubber') && !mon[d.id]) { mon[d.id] = f.tag!.startsWith('mon:') ? s.devices[f.origin]?.kind === 'server' ? (s.devices[f.origin] as ServerDevice).agents.monitor?.masterId ?? '' : '' : f.origin; delete why[d.id]; }
-    }
+  for (const id of Object.keys(silent)) {
+    if (wasSilent[id]) continue;
+    const d = s.devices[id]; const m = s.devices[mon[id] ?? ''];
+    if (!d || !m) continue;
+    hooks?.log(s, d.id, `Monitoring: ${d.name} stopped answering ${m.name}`, 'warn');
+    hooks?.notify(`Monitoring: ${d.name} stopped answering ${m.name}'s polls.`, 'warn');
   }
+  c.monSilent = silent;
+  c.monTargets = tstat;
   c.monitored = mon;
   c.monWhy = why;
   // consoles: desks that can open a master's web page
@@ -195,7 +231,7 @@ export function noticeTick(s: WorldState, c: RuntimeCache): void {
   for (const p of probs) {
     const d = s.devices[p.deviceId]!;
     const near = engineers.find((e) => cheb(e.x, e.y, d.gridPos.gx + 0.5, d.gridPos.gy + 0.5) <= NOTICE_RADIUS + 0.5);
-    const monitored = !!c.monitored?.[d.id];
+    const monitored = !!c.monitored?.[d.id] && !(p.smart && c.monSilent?.[d.id]);
     const k = known[p.key];
     if (!k) {
       if (monitored) {

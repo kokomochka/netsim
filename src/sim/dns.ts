@@ -6,7 +6,7 @@
 import { INTERNET_IP, MGMT_PORT, ROLES } from '../balance';
 import { parseIp } from '../state/ip';
 import type { Device, DeviceId, RuntimeCache, ServerDevice, Service, WorldState } from '../state/types';
-import { buildCtx, resolveFromHost, resolveInbound, type NetCtx } from './net';
+import { backendPort, buildCtx, resolveFromHost, resolveInbound, type NetCtx } from './net';
 
 const up = (d: Device | undefined) => !!d && d.health.state !== 'failed' && !d.compromised && !(d.health.state === 'repairing' && d.health.repairKind === 'full');
 const hasRole = (d: Device | undefined, role: string): d is ServerDevice => d?.kind === 'server' && d.roles.some((r) => r.role === role);
@@ -103,13 +103,13 @@ function checkBackend(s: WorldState, ctx: NetCtx, cache: RuntimeCache, px: Serve
       const rule = { backend };
       const res = resolveFor(s, ctx, px, rule.backend);
       if (!res.ip) return { ok: false, why: res.why, name: backend };
-      const p = resolveFromHost(ctx, px, parseIp(res.ip)!, 'tcp', v.port, 'fwd');
+      const p = resolveFromHost(ctx, px, parseIp(res.ip)!, 'tcp', backendPort(v), 'fwd');
       const hit = p.reachedServer ? s.devices[p.reachedServer] : undefined;
       // any server running the same kind of role can take the request (load balancing)
       const role = s.devices[v.serverId]?.kind === 'server' ? (s.devices[v.serverId] as ServerDevice).roles.find((r) => r.serviceId === v.id)?.role : undefined;
       const capable = hit?.kind === 'server' && up(hit) && (hit.id === v.serverId || cache.takeover[v.serverId] === hit.id || (role && hit.roles.some((r) => r.role === role)));
       if (!p.blocked && capable) return { ok: true, why: `${px.name} passes ${v.fqdn} to ${backend}${res.ip !== backend ? ` (${res.ip})` : ''}`, name: backend, id: hit!.id, ip: res.ip };
-      return { ok: false, why: p.blocked ? `${px.name} cannot reach ${backend} on tcp/${v.port}: ${p.explain}` : `${backend} does not run this kind of service`, name: backend };
+      return { ok: false, why: p.blocked ? `${px.name} cannot reach ${backend} on tcp/${backendPort(v)}: ${p.explain}` : `${backend} does not run this kind of service`, name: backend };
     }
   }
 }

@@ -119,13 +119,13 @@ export function showcaseWorld(): WorldState {
   // storage
   const nas = server('nas-01', 2, 11, 30, parts({ cpu: 2, ram: 2, disk: 2, diskType: 'hdd', disks: 6, raid: 'raid6', chassis: 1, psu2: true }), swB, 6);
   addRole(nas, 'nas', 445);
-  addRole(nas, 'cloud', 443, '203.0.113.11', 'cloud');
+  addRole(nas, 'cloud', 80, '203.0.113.11', 'cloud');
   nas.roles.find((r) => r.role === 'cloud')!.links = [nas.id];
   const san = server('san-01', 4, 11, 31, parts({ cpu: 2, ram: 2, disk: 2, diskType: 'nvme', disks: 4, raid: 'raid10', chassis: 1, psu2: true }), swB, 7);
   addRole(san, 'san', 3260);
   // AI: frontend + orchestrator with a back-end network on eth1 to two GPU boxes
   const ai = server('ai-front', 8, 11, 40, parts({ cpu: 2, ram: 2, ports: 3 }), swA, 4);
-  addRole(ai, 'ai_frontend', 443, '203.0.113.12', 'ai');
+  addRole(ai, 'ai_frontend', 80, '203.0.113.12', 'ai');
   addRole(ai, 'orchestrator', 7000);
   ai.roles.find((r) => r.role === 'ai_frontend')!.links = [ai.id];
   const gpus = [];
@@ -160,8 +160,14 @@ export function showcaseWorld(): WorldState {
   nas.cert = true;
   // monitoring master: every server runs an agent, network gear is polled over SNMP
   const mon = server('mon-01', 13, 6, 60, parts({ cpu: 1, ram: 1 }), swB, 0);
-  addRole(mon, 'monitor', 10051);
-  for (const d of Object.values(s.devices)) if (d.kind === 'server' && d.id !== mon.id) d.agents.monitor = { enabled: true, masterId: mon.id };
+  addRole(mon, 'monitor', 80);
+  const targets: { id: string; ip: string; method: 'agent' | 'snmp' }[] = [];
+  for (const d of Object.values(s.devices)) {
+    if (d.kind === 'server' && d.id !== mon.id) { d.agents.monitor = { enabled: true, masterIp: mon.ip }; if (d.ip) targets.push({ id: rid('mt'), ip: d.ip, method: 'agent' }); }
+    else if (d.kind === 'router' || d.kind === 'firewall') { const ip = (d.kind === 'firewall' ? d.interfaces.find((i) => i.ip && i.name !== 'outside')?.ip : undefined) ?? d.interfaces.find((i) => i.ip)?.ip; if (ip) targets.push({ id: rid('mt'), ip, method: 'snmp' }); }
+    else if ((d.kind === 'desk' || d.kind === 'badge' || d.kind === 'tower') && d.ip) targets.push({ id: rid('mt'), ip: d.ip, method: 'snmp' });
+  }
+  mon.roles.find((r) => r.role === 'monitor')!.targets = targets;
 
   // NAT for every public service and for the cell site
   fw.nat = nat.map((n) => ({ id: rid('nat'), publicIp: n.pub, privateIp: n.priv }));

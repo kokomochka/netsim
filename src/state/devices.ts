@@ -107,7 +107,7 @@ export const DEVICE_DEFS: { [K in DeviceKind]: DeviceDef<K> } = {
         ports: makePorts(this.ports), health: freshHealth(),
         addressing: 'static', ip: '', mask: '255.255.255.0', gateway: '', extra: [], dns: '', mac: macFor(id),
         parts: { ...BASE_PARTS }, specs: specsFor(BASE_PARTS), roles: [],
-        agents: { backup: { enabled: false, targetId: null }, failover: { enabled: false, partnerId: null, sanId: null }, monitor: { enabled: false, masterId: null } },
+        agents: { backup: { enabled: false, targetId: null }, failover: { enabled: false, partnerId: null, sanId: null }, monitor: { enabled: false, masterIp: '' } },
         usage: zeroUsage(), sw: freshSw(), compromised: null, hw: freshHw(BASE_PARTS), cert: false,
       };
     },

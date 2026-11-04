@@ -7,7 +7,7 @@
 //   • focus, caret, typed-but-uncommitted text and scroll survive re-renders;
 //   • while an input has focus, sim-driven re-renders wait for blur.
 import {
-  ACCESS, AC_COOLING_KW, CABLE_BANDWIDTH, CELL, MEDIA_SWAP_PRICE, OVERHEAT_C, CPU_PARTS, DISK_PARTS, DISK_TYPES, GPU_PARTS, NIC_PARTS, RAM_PARTS, ROLES, TICKS_PER_SEC, UPLINK_TIER,
+  ACCESS, AC_COOLING_KW, CABLE_BANDWIDTH, CELL, MEDIA_SWAP_PRICE, OVERHEAT_C, CPU_PARTS, DISK_PARTS, DISK_TYPES, GPU_PARTS, NIC_PARTS, RAM_PARTS, MON_AGENT_PORT, ROLES, SNMP_PORT, TICKS_PER_SEC, UPLINK_TIER,
   CERT_BONUS, CERT_PRICE, CERT_UPKEEP, CHASSIS, DEVICE_WATTS, PSU2_PRICE, RAID, SHUTDOWN_C, TEMP_CAP_RANGE, THROTTLE_C,
   type PartGate,
 } from '../balance';
@@ -100,12 +100,13 @@ const INSPECTOR_CSS = `
   .rt-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 46px 28px; }
   .nat-row { grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) 28px; }
   .nat-row .arrow { color: var(--ink-faint); text-align: center; }
+  .mt-row { grid-template-columns: minmax(0, 1fr) 150px 28px; }
   .px-card { gap: 6px; }
   .px-head { grid-template-columns: minmax(0, 1fr) 28px; }
   .px-be { grid-template-columns: 22px minmax(0, 1fr) 28px; }
   .px-n { font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--ink-faint); text-align: center; }
   .px-foot { grid-template-columns: minmax(0, 1fr); justify-items: start; gap: 4px; }
-  .fw-row1 { grid-template-columns: 26px 70px 62px minmax(0, 1fr) 28px 28px 28px; }
+  .fw-row1 { grid-template-columns: 26px 82px 68px minmax(0, 1fr) 28px 28px 28px; }
   .fw-row2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .fw-row3 { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 0.8fr); }
   .fw-if-row { grid-template-columns: 62px 44px minmax(0, 1fr) 134px; }
@@ -968,21 +969,24 @@ export class NsInspector extends HTMLElement {
       }));
     }
     // monitoring agent
-    const mon = d.agents.monitor ?? { enabled: false, masterId: null };
-    const masterList = Object.values(s.devices).filter((x) => x.kind === 'server' && x.roles.some((r) => r.role === 'monitor')) as DeviceOf<'server'>[];
+    const mon = d.agents.monitor ?? { enabled: false, masterIp: '' };
     if (!d.roles.some((r) => r.role === 'monitor')) {
-      agSec.appendChild(makeCheck('ag-monitor', ' Monitoring agent: report health to a monitoring master (tcp/10051)', mon.enabled, (v) => edit((x) => { x.agents.monitor = { enabled: v, masterId: x.agents.monitor?.masterId ?? masterList[0]?.id ?? null }; })));
+      agSec.appendChild(makeCheck('ag-monitor', ` Monitoring agent: answers polls on tcp/${MON_AGENT_PORT}`, mon.enabled, (v) => edit((x) => { x.agents.monitor = { enabled: v, masterIp: x.agents.monitor?.masterIp ?? '' }; })));
       if (mon.enabled) {
         const f = el('label', 'field');
-        f.appendChild(el('span', undefined, 'Master'));
-        f.appendChild(makeSelect('ag-mon-master', [{ value: '', label: masterList.length ? 'choose a master' : 'no Monitoring master yet' }, ...masterList.map((x) => ({ value: x.id, label: `${x.name} (${x.ip || 'no IP'})` }))], mon.masterId ?? '', 'Monitoring master', (v) => edit((x) => { x.agents.monitor = { enabled: true, masterId: v || null }; })));
+        f.appendChild(el('span', undefined, 'Master IP'));
+        f.appendChild(makeInput('ag-mon-master', mon.masterIp, {
+          placeholder: '192.168.10.60', ariaLabel: 'Monitoring master IP', check: checkIp(mon.masterIp, ''),
+          onCommit: (v) => edit((x) => { x.agents.monitor = { enabled: true, masterIp: v.trim() }; }),
+        }));
         agSec.appendChild(f);
+        agSec.appendChild(el('p', 'sub', `The agent only answers polls from this address. Add ${d.ip || 'this server\'s IP'} as an agent target on the master.`));
       }
     }
 
     // ── Certificate
     const certSec = section(heading('Certificate', d.cert ? 'installed' : 'none'));
-    certSec.appendChild(makeCheck('srv-cert', ` TLS certificate ($${CERT_PRICE}, $${CERT_UPKEEP}/s): HTTPS visitors trust the sites answered here`, !!d.cert, (v) => { const e = setCert(d.id, v); if (e) { toast(e, 'error'); this.schedule(); } }));
+    certSec.appendChild(makeCheck('srv-cert', ` TLS certificate ($${CERT_PRICE}, $${CERT_UPKEEP}/s): websites answered here switch to HTTPS on tcp/443. Allow 443 on your firewall.`, !!d.cert, (v) => { const e = setCert(d.id, v); if (e) { toast(e, 'error'); this.schedule(); } }));
     certSec.appendChild(this.liveText(() => {
       const st = world.get();
       const here = Object.values(st.services).filter((v) => v.kind !== 'dns' && (v.flowIds ?? []).some((id) => runtime.paths[id]?.reachedServer === d.id));
@@ -1029,7 +1033,7 @@ export class NsInspector extends HTMLElement {
       t.appendChild(tr);
     }
     box.appendChild(t);
-    if (!smart) box.appendChild(el('p', 'sub', st.unlocks.monitoring ? 'Wear readings need a working monitoring agent on this server.' : `Wear readings (SMART) unlock with “${UNLOCK_SOURCE.monitoring ?? '?'}”.`));
+    if (!smart) box.appendChild(el('p', 'sub', st.unlocks.monitoring ? 'Wear readings need the monitoring agent to answer a master\'s polls.' : `Wear readings (SMART) unlock with “${UNLOCK_SOURCE.monitoring ?? '?'}”.`));
     return box;
   }
 
@@ -1039,7 +1043,8 @@ export class NsInspector extends HTMLElement {
       const d = st.devices[id];
       if (!d) return el('div');
       const m = runtime.monitored?.[id];
-      if (m) return el('div', 'explain ok', m === id ? 'Monitoring master: it watches itself.' : `Monitored by ${st.devices[m]?.name ?? '?'}: problems raise an alert right away.`);
+      if (m && runtime.monSilent?.[id]) return el('div', 'explain warn', `Not answering ${st.devices[m]?.name ?? '?'}'s polls: ${runtime.monWhy?.[id] ?? 'no reply'}. The master raises an alert; it cannot read wear until it answers again.`);
+      if (m) return el('div', 'explain ok', m === id ? 'Monitoring master: it watches itself.' : `Polled by ${st.devices[m]?.name ?? '?'} and answering: problems raise an alert right away.`);
       return el('div', 'explain bad', `Not monitored: ${runtime.monWhy?.[id] ?? 'no Monitoring master'}. Problems are only found when an engineer walks past.`);
     });
   }
@@ -1051,11 +1056,25 @@ export class NsInspector extends HTMLElement {
     box.style.display = 'grid';
     box.style.gap = '5px';
     if (role === 'monitor') {
+      box.appendChild(el('span', 'lbl', 'Poll targets: address → method'));
+      (r.targets ?? []).forEach((t, i) => {
+        const row = el('div', 'row mt-row');
+        row.appendChild(makeInput(`mt-${t.id}-ip`, t.ip, { placeholder: '192.168.10.10', ariaLabel: 'Address to poll', check: checkIp(t.ip, ''), onCommit: (v) => editRole(d.id, 'monitor', (x) => { const y = x.targets?.[i]; if (y) y.ip = v.trim(); }) }));
+        row.appendChild(makeSelect(`mt-${t.id}-m`, [{ value: 'agent', label: `Agent ${MON_AGENT_PORT}` }, { value: 'snmp', label: `SNMP ${SNMP_PORT}` }], t.method, 'Method', (v) => editRole(d.id, 'monitor', (x) => { const y = x.targets?.[i]; if (y) y.method = v as 'agent' | 'snmp'; })));
+        row.appendChild(btn('✕', () => editRole(d.id, 'monitor', (x) => { x.targets?.splice(i, 1); }), 'icon-btn danger', 'Remove target'));
+        box.appendChild(row);
+        box.appendChild(this.liveText(() => {
+          const st = runtime.monTargets?.[`${d.id}:${t.id}`];
+          return st ? `${st.ok ? '✓' : '✕'} ${st.msg}` : t.ip ? 'polling…' : '';
+        }, 'sub'));
+      });
+      box.appendChild(btn('+ Add target', () => editRole(d.id, 'monitor', (x) => { (x.targets ??= []).push({ id: genId('mt'), ip: '', method: 'agent' }); }), 'add'));
       box.appendChild(this.liveText(() => {
         const st = world.get();
         const watched = Object.entries(runtime.monitored ?? {}).filter(([, m]) => m === d.id).length;
+        const quiet = Object.keys(runtime.monSilent ?? {}).filter((k) => runtime.monitored?.[k] === d.id).map((k) => st.devices[k]?.name ?? '?');
         const cons = Object.entries(runtime.consoles ?? {}).filter(([, m]) => m === d.id).map(([k]) => st.devices[k]?.name ?? '?');
-        return `Watching ${watched} device${watched === 1 ? '' : 's'}. Turn on the monitoring agent on each server and point it here; routers, firewalls, desks and doors are polled over SNMP. ${cons.length ? `Console open on ${cons.join(', ')}: engineers seated there see every alert.` : 'No desk can open the console (tcp/80) yet: alerts reach you, but staff will not act on them.'}`;
+        return `Watching ${watched} device${watched === 1 ? '' : 's'}${quiet.length ? ` (not answering: ${quiet.join(', ')})` : ''}. Servers: agent on tcp/${MON_AGENT_PORT} with this master's IP (${d.ip || 'set an IP'}) typed in. Routers, firewalls, desks and doors: SNMP. Firewalls between here and a target must allow the poll; the reply passes as part of the connection. ${cons.length ? `Console open on ${cons.join(', ')}: engineers seated there see every alert.` : 'No desk can open the console (tcp/80) yet: alerts reach you, but staff will not act on them.'}`;
       }, 'note'));
       return box;
     }
@@ -1460,10 +1479,16 @@ export class NsInspector extends HTMLElement {
       row1.appendChild(act);
       row1.appendChild(makeSelect(`${r.id}-proto`, ['any', 'tcp', 'udp', 'icmp'].map((p) => ({ value: p, label: p })), r.protocol, 'Protocol', (v) => upd((x) => { x.protocol = v as FwProtocol; })));
       const hits = this.liveText(() => {
-        const m = runtime.ruleHits[`${d.id}:${r.id}`] ?? 0;
-        return m > 0 ? `hit ${mbps(m)}` : 'no hits';
+        const key = `${d.id}:${r.id}`;
+        const m = runtime.ruleHits[key] ?? 0;
+        const n = runtime.ruleHitCount?.[key] ?? 0;
+        if (m > 0) return `${n}× · ${mbps(m)} now`;
+        const last = runtime.ruleLastHit?.[key];
+        if (last === undefined) return 'no hits';
+        const ago = Math.max(0, Math.round((world.get().time.tick - last) / TICKS_PER_SEC));
+        return `${n}× · ${ago < 60 ? `${ago} s` : `${Math.round(ago / 60)} min`} ago`;
       }, 'hits');
-      this.live.push(() => { hits.classList.toggle('on', (runtime.ruleHits[`${d.id}:${r.id}`] ?? 0) > 0); });
+      this.live.push(() => { hits.classList.toggle('on', (runtime.ruleHits[`${d.id}:${r.id}`] ?? 0) > 0); hits.title = 'Sessions that matched this rule since the game was loaded, and when it last matched'; });
       row1.appendChild(hits);
       const up = btn('↑', () => move(i, -1), 'icon-btn', 'Move rule up'); up.disabled = i === 0; row1.appendChild(up);
       const dn = btn('↓', () => move(i, 1), 'icon-btn', 'Move rule down'); dn.disabled = i === d.rules.length - 1; row1.appendChild(dn);

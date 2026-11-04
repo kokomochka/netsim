@@ -155,9 +155,10 @@ export const DEVICE_WATTS: Record<DeviceKind, { idle: number; load: number; r: n
 };
 
 // ─── Monitoring and certificates ───────────────────────────────────────────
-export const MON_AGENT_PORT = 10051;         // agent → master (tcp)
+export const MON_AGENT_PORT = 10050;         // master polls the server agent (tcp)
 export const MON_CONSOLE_PORT = 80;          // engineers open the master's web console
 export const SNMP_PORT = 161;                // master polls network devices (udp)
+export const POLL_TIMEOUT_S = 6;             // silent this long → "stopped answering" alert
 export const NOTICE_RADIUS = 2;              // cells: an engineer this close sees blinking LEDs
 export const CERT_PRICE = 60;
 export const CERT_UPKEEP = 0.004;
@@ -192,9 +193,9 @@ export interface RoleDef {
   multiLink?: boolean;           // may use several back ends at once
 }
 export const ROLES: Record<RoleKind, RoleDef> = {
-  web:          { label: 'Website', blurb: 'Hosts a website on tcp/80. About $0.40/s and 20 Mbps of visitors.', port: 80, proto: 'tcp', cores: 1, ramGB: 1, diskGB: 10, public: true, service: 'web', stateful: false },
-  cloud:        { label: 'Cloud storage', blurb: 'Customers upload files over tcp/443 and pay per GB stored. The data lives on a NAS or SAN you link it to.', port: 443, proto: 'tcp', cores: 2, ramGB: 4, diskGB: 20, public: true, service: 'cloud', stateful: false, linksTo: ['nas', 'san'] },
-  ai_frontend:  { label: 'AI frontend', blurb: 'Public AI API on tcp/443. Takes requests and hands them to an orchestrator. Pays by the GPU power behind it.', port: 443, proto: 'tcp', cores: 1, ramGB: 2, diskGB: 10, public: true, service: 'ai', stateful: false, linksTo: ['orchestrator'] },
+  web:          { label: 'Website', blurb: 'Hosts a website on tcp/80, or HTTPS on tcp/443 once it has a certificate. About $0.40/s and 20 Mbps of visitors.', port: 80, proto: 'tcp', cores: 1, ramGB: 1, diskGB: 10, public: true, service: 'web', stateful: false },
+  cloud:        { label: 'Cloud storage', blurb: 'Customers upload files over tcp/80, or HTTPS on tcp/443 once it has a certificate, and pay per GB stored. The data lives on a NAS or SAN you link it to.', port: 80, proto: 'tcp', cores: 2, ramGB: 4, diskGB: 20, public: true, service: 'cloud', stateful: false, linksTo: ['nas', 'san'] },
+  ai_frontend:  { label: 'AI frontend', blurb: 'Public AI API on tcp/80, or HTTPS on tcp/443 once it has a certificate. Takes requests and hands them to an orchestrator. Pays by the GPU power behind it.', port: 80, proto: 'tcp', cores: 1, ramGB: 2, diskGB: 10, public: true, service: 'ai', stateful: false, linksTo: ['orchestrator'] },
   orchestrator: { label: 'Orchestrator', blurb: 'Splits AI jobs across GPU compute servers (tcp/7000). Best wired to them over a second, back-end network on eth1.', port: 7000, proto: 'tcp', cores: 2, ramGB: 8, diskGB: 50, public: false, stateful: false, linksTo: ['gpu'], multiLink: true },
   gpu:          { label: 'GPU compute', blurb: 'Worker that runs AI jobs for an orchestrator (tcp/7001). Needs a GPU.', port: 7001, proto: 'tcp', cores: 2, ramGB: 8, diskGB: 100, needsGpu: true, public: false, stateful: false },
   nas:          { label: 'NAS', blurb: 'File storage on tcp/445. Backup agents and cloud storage keep data here.', port: 445, proto: 'tcp', cores: 1, ramGB: 4, diskGB: 500, public: false, stateful: true },
@@ -204,7 +205,7 @@ export const ROLES: Record<RoleKind, RoleDef> = {
   proxy:        { label: 'Reverse proxy', blurb: 'Takes web traffic on one public IP (tcp/80 and 443) and passes each request to the back end mapped to the name the visitor asked for. Many sites, one IP.', port: 443, ports: [80, 443], proto: 'tcp', cores: 1, ramGB: 2, diskGB: 10, public: false, stateful: false },
   fwd_proxy:    { label: 'Forward proxy', blurb: 'Lets internal servers reach the internet through it (tcp/3128), e.g. the update mirror fetching releases. Needs internet access itself.', port: 3128, proto: 'tcp', cores: 1, ramGB: 2, diskGB: 20, public: false, stateful: false },
   dns_local:    { label: 'Local DNS', blurb: 'Answers internal names such as app1.lan on udp/53. Hosts use it when you set it as their DNS server.', port: 53, proto: 'udp', cores: 1, ramGB: 1, diskGB: 5, public: false, stateful: false },
-  monitor:      { label: 'Monitoring master', blurb: 'Collects health reports from monitoring agents (tcp/10051) and polls network devices over SNMP (udp/161). Engineers at a desk that can open its console (tcp/80) see every alert.', port: 10051, ports: [10051, 80], proto: 'tcp', cores: 1, ramGB: 2, diskGB: 20, public: false, stateful: false },
+  monitor:      { label: 'Monitoring master', blurb: 'Polls the addresses you list: server agents on tcp/10050, network gear over SNMP (udp/161). The reply must come back too. Engineers at a desk that can open its console (tcp/80) see every alert.', port: 80, ports: [80], proto: 'tcp', cores: 1, ramGB: 2, diskGB: 20, public: false, stateful: false },
   dns_public:   { label: 'Public DNS', blurb: 'Public DNS service on udp/53: earns per query, and can host your own domains (self-hosted DNS).', port: 53, proto: 'udp', cores: 1, ramGB: 2, diskGB: 10, public: true, service: 'dns', stateful: false },
 };
 export const MGMT_PORT = 22;     // SSH: remote updates from a desk PC

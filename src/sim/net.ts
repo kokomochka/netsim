@@ -13,11 +13,11 @@
 //   • The reply path is resolved too, so a missing gateway, a missing return
 //     route or an un-NATed private source breaks the service.
 
-import { MGMT_PORT, ROLES, SNMP_PORT } from '../balance';
+import { MGMT_PORT, MON_AGENT_PORT, ROLES, SNMP_PORT } from '../balance';
 import { formatCidr, formatIp, inCidr, isAny, parseCidr, parseIp, parsePortRange, prefixToMask, subnetOf, type Cidr } from '../state/ip';
 import type {
   BlockReason, Cable, CableId, DdosScrubberDevice, Device, DeviceId, FirewallDevice, FirewallInterface,
-  Flow, Hop, L3Device, NatEntry, ResolvedPath, Route, RuntimeCache, WorldState,
+  Flow, Hop, L3Device, NatEntry, ResolvedPath, Route, RuntimeCache, ServerDevice, Service, WorldState,
 } from '../state/types';
 
 // ─── Context ────────────────────────────────────────────────────────────────
@@ -391,21 +391,48 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
         const primaryId = d.kind === 'server' ? ctx.standbyFor.get(d.id) : undefined;
         const primary = primaryId ? ctx.s.devices[primaryId] : undefined;
         const ownsDst = parseIp(d.ip) === pkt.dst || (d.kind === 'server' && d.extra.some((x) => parseIp(x.ip) === pkt.dst)) || (primary?.kind === 'server' && parseIp(primary.ip) === pkt.dst);
-        if (pkt.dir === 'ret' || !ownsDst) {
+        if (!ownsDst) {
           h.note = 'is not a router and drops traffic meant for someone else';
           return b.block('not_for_me', `${d.name} received a packet for ${ipStr(pkt.dst)} but hosts do not forward traffic.`);
         }
+        if (pkt.dir === 'ret') {
+          // a reply to a connection this host opened (monitoring polls)
+          b.p.reachedServer = d.id;
+          h.note = 'receives the reply';
+          return b.ok(`Reply delivered to ${d.name}.`);
+        }
         b.p.reachedServer = d.id;
         const mgmt = pkt.proto === 'tcp' && pkt.dport === MGMT_PORT;
-        const snmp = pkt.proto === 'udp' && pkt.dport === SNMP_PORT;
-        const listens = mgmt || snmp || (d.kind === 'server' && d.roles.some((r) => ROLES[r.role].proto === pkt.proto && (ROLES[r.role].ports ?? [r.port]).includes(pkt.dport)));
+        const snmp = pkt.proto === 'udp' && pkt.dport === SNMP_PORT && d.kind !== 'server';
+        const agent = d.kind === 'server' && pkt.proto === 'tcp' && pkt.dport === MON_AGENT_PORT && !!d.agents.monitor?.enabled;
+        if (agent) {
+          const allowed = d.agents.monitor!.masterIp?.trim() ?? '';
+          if (!allowed || parseIp(allowed) !== pkt.src) {
+            h.note = `monitoring agent ignores the poll from ${ipStr(pkt.src)}`;
+            return b.block('port_closed', allowed
+              ? `${d.name}'s monitoring agent only answers its master ${allowed}, not ${ipStr(pkt.src)}.`
+              : `${d.name}'s monitoring agent has no master IP set: type the master's address into the agent.`);
+          }
+        }
+        if (d.kind === 'server' && pkt.proto === 'udp' && pkt.dport === SNMP_PORT) {
+          h.note = 'servers do not answer SNMP';
+          return b.block('port_closed', `${d.name} does not answer SNMP. Servers are polled through the monitoring agent (tcp/${MON_AGENT_PORT}).`);
+        }
+        // web, cloud and AI answer HTTP on 80, and HTTPS on 443 only with a certificate
+        const webby = d.kind === 'server' && pkt.proto === 'tcp' && d.roles.some((r) => HTTP_ROLES.has(r.role));
+        if (webby && pkt.dport === 443 && !(d as ServerDevice).cert && !d.roles.some((r) => r.role === 'proxy')) {
+          h.note = 'has no certificate, so nothing answers HTTPS';
+          return b.block('port_closed', `${d.name} has no TLS certificate, so it does not answer HTTPS on tcp/443. Buy one, or let visitors use tcp/80.`);
+        }
+        const https = webby && (pkt.dport === 80 || pkt.dport === 443);
+        const listens = mgmt || snmp || agent || https || (d.kind === 'server' && d.roles.some((r) => ROLES[r.role].proto === pkt.proto && (ROLES[r.role].ports ?? [r.port]).includes(pkt.dport)));
         if (!listens) {
           h.note = `has nothing listening on ${pkt.proto}/${pkt.dport}`;
           return b.block('port_closed', `${d.name} has no service on ${pkt.proto}/${pkt.dport}. Install the matching role on it.`);
         }
         const via = primary ? ` (standing in for ${primary.name} via failover)` : '';
         const isProxy = d.kind === 'server' && d.roles.some((r) => r.role === 'proxy') && pkt.host && (pkt.dport === 80 || pkt.dport === 443);
-        h.note = mgmt ? `accepts the SSH management session${via}` : snmp ? 'answers the SNMP poll'
+        h.note = mgmt ? `accepts the SSH management session${via}` : snmp ? 'answers the SNMP poll' : agent ? 'monitoring agent answers the poll'
           : isProxy ? `reverse proxy reads the requested name "${pkt.host}" and looks up its back end${via}`
           : `accepts the connection on ${pkt.proto}/${pkt.dport}${via}`;
         return b.ok(`Delivered to ${d.name}${via}.`);
@@ -587,6 +614,27 @@ export function resolveReply(ctx: NetCtx, server: Device, visitor: number, sport
   return resolveFromHost(ctx, server, visitor, 'tcp', sport, 'ret', 0, vip);
 }
 
+/** Roles that speak HTTP: tcp/80, or tcp/443 with a certificate. */
+const HTTP_ROLES = new Set(['web', 'cloud', 'ai_frontend']);
+
+/** Port a reverse proxy uses toward the back end: TLS ends at the proxy, so plain HTTP. */
+export function backendPort(svc: Service): number {
+  return svc.kind === 'dns' ? svc.port : 80;
+}
+
+/** The answer to a monitoring poll: from the polled device back to the master.
+ *  Hosts reply like any host; routers and firewalls send it along their own routes. */
+export function resolvePollReply(ctx: NetCtx, dev: Device, polledIp: number, master: number, proto: Pkt['proto'], port: number): ResolvedPath {
+  if (dev.kind === 'server' || dev.kind === 'desk' || dev.kind === 'tower' || dev.kind === 'badge') return resolveFromHost(ctx, dev, master, proto, port, 'ret', 0, polledIp);
+  const b = new PathBuilder();
+  if (dev.kind !== 'router' && dev.kind !== 'firewall') return b.block('no_ip', `${dev.name} cannot answer polls.`);
+  const rt = lookupRoute(ctx, dev, master);
+  if (!rt) { b.hop({ deviceId: dev.id, inPort: null, outPort: null, note: `no route back to ${ipStr(master)}` }); return b.block('no_route', `${dev.name} has no route back to ${ipStr(master)} for the SNMP reply. Add a route toward the master's subnet.`); }
+  b.hop({ deviceId: dev.id, inPort: null, outPort: rt.port, note: `sends the SNMP reply: ${rt.desc}` });
+  const pkt: Pkt = { src: polledIp, srcAny: false, dst: master, proto, sport: port, dport: 50000, syn: false, mbps: 0, dir: 'ret' };
+  return routeOnward(ctx, b, dev, rt.port, rt.nextHop ?? master, pkt);
+}
+
 /** Representative visitor address used for the reply check. */
 export const VISITOR_IP = parseIp('198.51.100.77')!;
 
@@ -611,7 +659,15 @@ export function resolveFlow(ctx: NetCtx, flow: Flow): ResolvedPath {
   if (flow.origin !== 'external') {
     const host = ctx.s.devices[flow.origin];
     if (!host) { const b = new PathBuilder(); return b.block('link_down', 'Source is gone.'); }
-    return resolveFromHost(ctx, host, parseIp(flow.dstIp) ?? 0, flow.protocol, flow.dstPort, 'fwd', flow.rateMbps);
+    const p = resolveFromHost(ctx, host, parseIp(flow.dstIp) ?? 0, flow.protocol, flow.dstPort, 'fwd', flow.rateMbps);
+    if (flow.kind === 'control' && flow.tag?.startsWith('poll:') && !p.blocked && p.reachedServer && p.reachedServer !== host.id) {
+      const dev = ctx.s.devices[p.reachedServer];
+      if (dev) {
+        p.ret = resolvePollReply(ctx, dev, parseIp(flow.dstIp) ?? 0, parseIp(host.kind === 'server' ? host.ip : '') ?? 0, flow.protocol, flow.dstPort);
+        if (p.ret.blocked) p.explain = `The poll arrives, but the reply fails: ${p.ret.explain}`;
+      }
+    }
+    return p;
   }
   const pkt = packetFor(flow);
   const p = resolveInbound(ctx, pkt);

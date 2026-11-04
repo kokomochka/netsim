@@ -14,6 +14,7 @@ import {
 import { carryComps, diskPrice, freshComps, roleUse, serverCaps, serverPrice, serverUpkeep, specsFor, wipesArray } from '../state/hardware';
 import { compName, effTflops, failedComps, hwFastTick, serverDown, setHwHooks, syncHealth } from './hw';
 import { knownProblems, monitorFlows, noticeTick, setMonitorHooks } from './monitor';
+import { backendPort } from './net';
 import { cancelJob, compromise, createJob, deskReaches, setStaffHooks, spawnTrespasser, staffTick } from './staff';
 import { checkAchievements } from '../progress';
 import { parseIp } from '../state/ip';
@@ -109,6 +110,22 @@ function resolveAll(state: WorldState, cache: RuntimeCache): void {
 
 // ─── Services and their visitor flows ───────────────────────────────────────
 
+/** Port visitors connect to. Websites, cloud storage and AI APIs are plain HTTP on
+ *  tcp/80 until whoever answers them has a certificate (their own server, or a reverse
+ *  proxy that maps their name): then HTTPS on tcp/443. Decided by configuration, not
+ *  reachability, so a blocked 443 shows as blocked instead of flapping. */
+export function visitorPort(state: WorldState, svc: Service): number {
+  if (svc.kind === 'dns') return svc.port;
+  const host = state.devices[svc.serverId];
+  if (host?.kind === 'server' && host.cert) return 443;
+  if (svc.fqdn) {
+    for (const d of Object.values(state.devices)) {
+      if (d.kind === 'server' && d.cert && d.roles.some((r) => r.role === 'proxy' && (r.rules ?? []).some((x) => x.fqdn === svc.fqdn))) return 443;
+    }
+  }
+  return 80;
+}
+
 function syncServiceFlows(state: WorldState, cache: RuntimeCache): void {
   const curve = 1 + 0.2 * Math.sin((2 * Math.PI * state.time.tick) / DAY_TICKS);
   for (const svc of Object.values(state.services)) {
@@ -118,21 +135,23 @@ function syncServiceFlows(state: WorldState, cache: RuntimeCache): void {
     const rate = base * svc.demand * curve * svc.reputation * (named ? NAMED_DEMAND_BONUS : 1) * (svc.quality ?? 1) * certMul(state, cache, svc);
     const dsts = endpointsOf(state, cache, svc);
     const proto = svc.kind === 'dns' ? 'udp' as const : 'tcp' as const;
+    const port = visitorPort(state, svc);
     // health-checked spreading: working endpoints share the load, broken ones get a trickle
     const prev = (svc.flowIds ?? []).map((id) => state.flows[id]).filter((f): f is Flow => !!f);
     const healthy = new Set(prev.filter((f) => flowWorks(state, cache, svc, f.id)).map((f) => f.dstIp));
     const nHealthy = dsts.filter((d) => healthy.has(d)).length;
     const keep: string[] = [];
     for (const dst of dsts) {
-      let f = prev.find((x) => x.dstIp === dst && x.dstPort === svc.port && x.protocol === proto && x.host === (svc.fqdn ?? undefined));
+      let f = prev.find((x) => x.dstIp === dst && x.dstPort === port && x.protocol === proto && x.host === (svc.fqdn ?? undefined));
       const share = nHealthy ? (healthy.has(dst) ? rate / nHealthy : 0.5) : rate / dsts.length;
       if (!f) {
         const id = `flw_${state.nextId++}`;
-        f = { id, kind: 'http', origin: 'external', srcCidr: '0.0.0.0/0', dstIp: dst, host: svc.fqdn ?? undefined, protocol: proto, srcPort: 50000, dstPort: svc.port, syn: false, rateMbps: share, serviceId: svc.id, incidentId: null };
+        f = { id, kind: 'http', origin: 'external', srcCidr: '0.0.0.0/0', dstIp: dst, host: svc.fqdn ?? undefined, protocol: proto, srcPort: 50000, dstPort: port, syn: false, rateMbps: share, serviceId: svc.id, incidentId: null };
         state.flows[id] = f;
         cache.topologyDirty = true;
       }
       f.rateMbps = share;
+      f.healthCheck = nHealthy > 0 && !healthy.has(dst);
       keep.push(f.id);
     }
     for (const f of prev) if (!keep.includes(f.id)) { delete state.flows[f.id]; cache.topologyDirty = true; }
@@ -244,7 +263,15 @@ function applyLoad(state: WorldState, cache: RuntimeCache): void {
     let fac = 1;
     for (const r of p.resources) fac = Math.min(fac, factor.get(r) ?? 1);
     cache.delivery[f.id] = fac;
-    for (const m of pathMatches(p)) cache.ruleHits[m] = (cache.ruleHits[m] ?? 0) + f.rateMbps;
+    for (const m of pathMatches(p)) {
+      cache.ruleHits[m] = (cache.ruleHits[m] ?? 0) + f.rateMbps;
+      // keep a running count, so short sessions (SSH pushes, polls) still leave a trace
+      const seen = (cache.ruleSeen ??= {});
+      const cnt = (cache.ruleHitCount ??= {});
+      (cache.ruleLastHit ??= {})[m] = state.time.tick;
+      const k = `${f.id}|${m}`;
+      if (!seen[k]) { seen[k] = true; cnt[m] = (cnt[m] ?? 0) + 1; }
+    }
     // talkers: every device the flow touched
     p.hops.forEach((h, i) => {
       const blockedHere = p.blocked && p.blockedAt === i;
@@ -309,7 +336,8 @@ function serviceAvailability(state: WorldState, cache: RuntimeCache): void {
       let tot = 0, got = 0;
       for (const id of ids) {
         const f = state.flows[id];
-        if (!f) continue;
+        // a dead endpoint's health-check trickle is not lost visitors: failover already moved them
+        if (!f || f.healthCheck) continue;
         tot += f.rateMbps;
         if (!work.includes(id)) continue;
         const host = state.devices[cache.paths[id]!.reachedServer!];
@@ -326,13 +354,14 @@ function serviceAvailability(state: WorldState, cache: RuntimeCache): void {
       }
     }
     svc.availability = a;
+    if (a >= 0.5) svc.live = true;
     if (a >= 0.99) {
       svc.upTicks++;
       svc.reputation = Math.min(2.5, svc.reputation + REPUTATION_GAIN_PER_MIN / MINUTE);
     } else svc.upTicks = 0;
     if (a <= 0.01) {
       svc.downSinceTick ??= state.time.tick;
-      if (!svc.downPenalised && state.time.tick - svc.downSinceTick > OUTAGE_GRACE_TICKS && svc.reputation > 0.5) {
+      if (svc.live && !svc.downPenalised && state.time.tick - svc.downSinceTick > OUTAGE_GRACE_TICKS && svc.reputation > 0.5) {
         svc.downPenalised = true;
         svc.reputation = Math.max(0.5, svc.reputation - REPUTATION_OUTAGE_HIT);
         const name = state.devices[svc.serverId]?.name ?? 'A site';
@@ -956,7 +985,7 @@ function syncInternalFlows(state: WorldState, cache: RuntimeCache): void {
       const n = bes.length + local;
       for (const b of bes) {
         want.set(`proxied:${svc.id}>${px.id}>${b.id}`, {
-          kind: 'proxied', origin: px.id, srcCidr: px.ip, dstIp: b.ip, protocol: 'tcp', srcPort: 50005, dstPort: svc.port,
+          kind: 'proxied', origin: px.id, srcCidr: px.ip, dstIp: b.ip, protocol: 'tcp', srcPort: 50005, dstPort: backendPort(svc),
           syn: false, rateMbps: (vf.rateMbps * (cache.delivery[fid] ?? 1)) / n, serviceId: svc.id, incidentId: null,
         });
       }
@@ -1202,7 +1231,11 @@ function stats(state: WorldState, cache: RuntimeCache): void {
   const s = state.stats;
   const svcs = Object.values(state.services);
   const towers = Object.values(state.devices).filter((d) => d.kind === 'tower');
-  const avails = [...svcs.map((v) => v.availability), ...towers.map((t) => (t.kind === 'tower' ? t.subs.availability : 0))];
+  // only what has been live counts: a site or cell site still being set up is not an outage
+  const avails = [
+    ...svcs.filter((v) => v.live).map((v) => v.availability),
+    ...towers.flatMap((t) => (t.kind === 'tower' && t.subs.live ? [t.subs.availability] : [])),
+  ];
   if (avails.length) {
     const avg = avails.reduce((a, b) => a + b, 0) / avails.length;
     s.bucketTickCount++;
@@ -1230,14 +1263,14 @@ function stats(state: WorldState, cache: RuntimeCache): void {
   }
 }
 
-/** Average uptime over recorded buckets plus the current partial one. */
+/** Uptime over the recorded minutes plus the current partial one, weighted by time:
+ *  a few seconds into a new minute count as a few seconds, not as a whole minute. */
 export function uptimePercent(state: WorldState): number | null {
   const s = state.stats;
   const vals = s.uptimeBuckets.filter((v): v is number => v !== null);
-  let sum = vals.reduce((a, b) => a + b, 0);
-  let n = vals.length;
-  if (s.bucketTickCount > 0) { sum += s.bucketAvailSum / s.bucketTickCount; n++; }
-  return n ? (sum / n) * 100 : null;
+  const sum = vals.reduce((a, b) => a + b, 0) * MINUTE + s.bucketAvailSum;
+  const ticks = vals.length * MINUTE + s.bucketTickCount;
+  return ticks ? (sum / ticks) * 100 : null;
 }
 
 // ─── Logs ───────────────────────────────────────────────────────────────────
