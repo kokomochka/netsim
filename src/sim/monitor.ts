@@ -20,7 +20,7 @@ import { cheb } from '../state/floor';
 import { parseIp } from '../state/ip';
 import type { Device, DeviceId, Flow, MonTarget, RuntimeCache, ServerDevice, WorldState } from '../state/types';
 import { compName, OFF_LABEL } from './hw';
-import { buildCtx, l3Ifaces, resolveFromHost } from './net';
+import { buildCtx, l3Ifaces, resolveFromHost, roundTrip, tripOk } from './net';
 
 type Hooks = {
   notify: (m: string, l: 'info' | 'warn' | 'alert' | 'good') => void;
@@ -206,9 +206,8 @@ export function refreshMonitoring(s: WorldState, c: RuntimeCache): void {
       if (desk.kind !== 'desk' || desk.health.state === 'failed' || desk.compromised) continue;
       for (const m of ms) {
         const ok = l3Ifaces(ctx, m, false).some((i) => {
-          const p = resolveFromHost(ctx, desk, i.ip, 'tcp', MON_CONSOLE_PORT, 'fwd');
-          return !p.blocked && p.reachedServer === m.id;
-        }) || (parseIp(m.ip) !== null && (() => { const p = resolveFromHost(ctx, desk, parseIp(m.ip)!, 'tcp', MON_CONSOLE_PORT, 'fwd'); return !p.blocked && p.reachedServer === m.id; })());
+          return tripOk(roundTrip(ctx, desk, i.ip, 'tcp', MON_CONSOLE_PORT), m.id);
+        }) || (parseIp(m.ip) !== null && tripOk(roundTrip(ctx, desk, parseIp(m.ip)!, 'tcp', MON_CONSOLE_PORT), m.id));
         if (ok) { cons[desk.id] = m.id; break; }
       }
     }

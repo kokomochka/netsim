@@ -17,7 +17,7 @@ import { cheb, edgeSpawns, findPath, isIndoor, tileAt, walkable, watched, workSp
 import { cellKey } from '../state/geometry';
 import { parseIp } from '../state/ip';
 import type { Device, DeviceId, Engineer, GridPos, Job, JobKind, RuntimeCache, Trespasser, Walker, WorldState } from '../state/types';
-import { buildCtx, l3Ifaces, resolveFromHost } from './net';
+import { buildCtx, l3Ifaces, resolveFromHost, roundTrip, tripOk } from './net';
 import { deskTooHot } from './climate';
 
 let cacheRef: RuntimeCache | null = null;
@@ -27,6 +27,7 @@ let hooks: {
   notify: (m: string, l: 'info' | 'warn' | 'alert' | 'good') => void;
   log: (s: WorldState, id: DeviceId, m: string, l: 'info' | 'warn' | 'alert') => void;
   finishJob: (s: WorldState, c: RuntimeCache, j: Job) => void;
+  fetchReady: (s: WorldState, c: RuntimeCache, j: Job) => boolean;
 } | null = null;
 export function setStaffHooks(h: typeof hooks): void { hooks = h; }
 
@@ -78,22 +79,18 @@ export function deskReaches(s: WorldState, c: RuntimeCache, desk: Device, target
   if (desk.id === target.id) return true;
   const ctx = buildCtx(s, c);
   for (const i of l3Ifaces(ctx, target, false)) {
-    const p = resolveFromHost(ctx, desk, i.ip, 'tcp', MGMT_PORT, 'fwd');
-    if (!p.blocked && p.reachedServer === target.id) return true;
+    if (tripOk(roundTrip(ctx, desk, i.ip, 'tcp', MGMT_PORT), target.id)) return true;
   }
   return false;
 }
 
-function mirrorOnline(s: WorldState): boolean {
-  return Object.values(s.devices).some((d) => d.kind === 'server' && d.roles.some((r) => r.role === 'mirror') && d.health.state !== 'failed' && !d.compromised && !!cacheRef?.mirrorOk[d.id]?.ok);
-}
 
 // ─── Jobs ───────────────────────────────────────────────────────────────────
 
 const PRIORITY: Record<JobKind, number> = { reimage: 0, full: 1, replace: 1, swap: 1, preventive: 2, upgrade: 2, inspect: 2, update: 3 };
 
 export function workTicks(kind: JobKind, remote: boolean, s: WorldState, job?: Job): number {
-  const sec = kind === 'update' ? (remote ? WORK_SECONDS.updateRemote * (mirrorOnline(s) ? 0.5 : 1) : WORK_SECONDS.update)
+  const sec = kind === 'update' ? (remote ? WORK_SECONDS.updateRemote : WORK_SECONDS.update) * (job && s.devices[job.deviceId]?.updateSrc?.trim() ? 0.5 : 1)
     : kind === 'swap' || kind === 'upgrade' ? (job?.cold ? SWAP_SECONDS.cold : SWAP_SECONDS.hot) * (kind === 'upgrade' ? 1.3 : 1)
     : kind === 'inspect' ? 2 : WORK_SECONDS[kind];
   return Math.round(sec * TICKS_PER_SEC);
@@ -128,6 +125,7 @@ function dispatch(s: WorldState, c: RuntimeCache): void {
   for (const job of open) {
     const dev = s.devices[job.deviceId];
     if (!dev) { delete s.staff.jobs[job.id]; continue; }
+    if (job.retryAt !== undefined && s.time.tick < job.retryAt) continue;
     const free = Object.values(s.staff.engineers).filter((e) => !e.jobId && e.state !== 'chasing');
     if (!free.length) return;
     // remote update from a desk
@@ -181,6 +179,21 @@ function assignDesks(s: WorldState, c: RuntimeCache): void {
   for (const d of Object.values(s.devices)) if (d.kind === 'desk' && d.ownerId && !s.staff.engineers[d.ownerId]) d.ownerId = null;
 }
 
+/** A patch whose download cannot start does not hold an engineer hostage. */
+const STUCK_TICKS = 5 * TICKS_PER_SEC;
+const RETRY_TICKS = 20 * TICKS_PER_SEC;
+function stuck(s: WorldState, job: Job): boolean {
+  if (job.waitWhy === 'Starting the download…') return false;
+  job.waitSince ??= s.time.tick;
+  if (s.time.tick - job.waitSince < STUCK_TICKS) return false;
+  job.retryAt = s.time.tick + RETRY_TICKS;
+  return true;
+}
+function letGo(job: Job, e: Engineer): void {
+  job.engineerId = null; job.started = false; job.remote = false; job.waitSince = undefined;
+  e.jobId = null;
+}
+
 function goHome(s: WorldState, e: Engineer): void {
   const desk = e.deskId ? s.devices[e.deskId] : undefined;
   if (!desk) { e.state = 'idle'; e.path = []; return; }
@@ -229,6 +242,8 @@ function tickEngineer(s: WorldState, c: RuntimeCache, e: Engineer): void {
       }
       return;
     }
+    if (job.kind === 'update' && hooks && !hooks.fetchReady(s, c, job)) { if (stuck(s, job)) { letGo(job, e); goHome(s, e); } return; }
+    job.waitSince = undefined;
     if (--job.workLeft <= 0) {
       hooks?.finishJob(s, c, job);
       delete s.staff.jobs[job.id];
@@ -239,6 +254,8 @@ function tickEngineer(s: WorldState, c: RuntimeCache, e: Engineer): void {
   }
 
   if (job && job.remote) {
+    if (job.kind === 'update' && hooks && !hooks.fetchReady(s, c, job)) { if (stuck(s, job)) letGo(job, e); return; }
+    job.waitSince = undefined;
     if (--job.workLeft <= 0) {
       hooks?.finishJob(s, c, job);
       delete s.staff.jobs[job.id];

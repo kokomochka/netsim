@@ -6,7 +6,7 @@
 import { INTERNET_IP, MGMT_PORT, ROLES } from '../balance';
 import { parseIp } from '../state/ip';
 import type { Device, DeviceId, RuntimeCache, ServerDevice, Service, WorldState } from '../state/types';
-import { backendPort, buildCtx, resolveFromHost, resolveInbound, type NetCtx } from './net';
+import { backendPort, buildCtx, resolveFromHost, resolveInbound, type NetCtx, roundTrip, tripOk } from './net';
 
 const up = (d: Device | undefined) => !!d && d.health.state !== 'failed' && !d.compromised && !(d.health.state === 'repairing' && d.health.repairKind === 'full');
 const hasRole = (d: Device | undefined, role: string): d is ServerDevice => d?.kind === 'server' && d.roles.some((r) => r.role === role);
@@ -46,26 +46,26 @@ export function resolveFor(s: WorldState, ctx: NetCtx, host: ServerDevice, name:
   if (parseIp(name) !== null) return { ip: name, why: '' };
   const dnsIp = parseIp(host.dns);
   if (dnsIp === null) return { ip: null, why: `${host.name} has no DNS server set, so it cannot look up "${name}". Set one under Network, or use an IP.` };
-  const p = resolveFromHost(ctx, host, dnsIp, 'udp', 53, 'fwd');
+  const p = roundTrip(ctx, host, dnsIp, 'udp', 53);
   const dns = p.reachedServer ? s.devices[p.reachedServer] : undefined;
-  if (p.blocked || !dns || dns.kind !== 'server' || !up(dns)) return { ip: null, why: `${host.name} cannot reach its DNS server ${host.dns}: ${p.explain}` };
+  if (!tripOk(p) || !dns || dns.kind !== 'server' || !up(dns)) return { ip: null, why: `${host.name} cannot reach its DNS server ${host.dns}: ${p.explain}` };
   const local = dns.roles.find((r) => r.role === 'dns_local');
   const pub = dns.roles.some((r) => r.role === 'dns_public');
   if (!local && !pub) return { ip: null, why: `${dns.name} (${host.dns}) runs no DNS role.` };
   const rec = local?.records?.find((r) => r.name.toLowerCase() === name.toLowerCase());
   if (rec) return { ip: rec.ip, why: `${dns.name} answered ${name} → ${rec.ip}` };
   // not a local name: forward to the internet (works for your own public names)
-  const out = resolveFromHost(ctx, dns, parseIp(INTERNET_IP)!, 'udp', 53, 'fwd');
-  if (out.blocked) return { ip: null, why: `${dns.name} does not know "${name}" and cannot ask the internet: ${out.explain}` };
+  const out = roundTrip(ctx, dns, parseIp(INTERNET_IP)!, 'udp', 53);
+  if (!tripOk(out)) return { ip: null, why: `${dns.name} does not know "${name}" and cannot ask the internet: ${out.explain}` };
   const r = resolvePublic(s, ctx, name);
   return r.ip ? { ip: r.ip, why: `${dns.name} forwarded the lookup: ${r.why}` } : { ip: null, why: `"${name}" is unknown: add it to ${dns.name}'s local zone. (${r.why})` };
 }
 
 /** Does the host reach the internet on tcp/443? */
-function internetOk(s: WorldState, ctx: NetCtx, host: ServerDevice): { ok: boolean; why: string } {
-  const p = resolveFromHost(ctx, host, parseIp(INTERNET_IP)!, 'tcp', 443, 'fwd');
+export function internetOk(s: WorldState, ctx: NetCtx, host: ServerDevice): { ok: boolean; why: string } {
+  const p = roundTrip(ctx, host, parseIp(INTERNET_IP)!, 'tcp', 443);
   const upl = Object.values(s.devices).find((d) => d.kind === 'uplink');
-  if (!p.blocked && p.reachedServer === upl?.id) return { ok: true, why: '' };
+  if (upl && tripOk(p, upl.id)) return { ok: true, why: '' };
   return { ok: false, why: p.explain };
 }
 
@@ -103,13 +103,13 @@ function checkBackend(s: WorldState, ctx: NetCtx, cache: RuntimeCache, px: Serve
       const rule = { backend };
       const res = resolveFor(s, ctx, px, rule.backend);
       if (!res.ip) return { ok: false, why: res.why, name: backend };
-      const p = resolveFromHost(ctx, px, parseIp(res.ip)!, 'tcp', backendPort(v), 'fwd');
+      const p = roundTrip(ctx, px, parseIp(res.ip)!, 'tcp', backendPort(v));
       const hit = p.reachedServer ? s.devices[p.reachedServer] : undefined;
       // any server running the same kind of role can take the request (load balancing)
       const role = s.devices[v.serverId]?.kind === 'server' ? (s.devices[v.serverId] as ServerDevice).roles.find((r) => r.serviceId === v.id)?.role : undefined;
       const capable = hit?.kind === 'server' && up(hit) && (hit.id === v.serverId || cache.takeover[v.serverId] === hit.id || (role && hit.roles.some((r) => r.role === role)));
-      if (!p.blocked && capable) return { ok: true, why: `${px.name} passes ${v.fqdn} to ${backend}${res.ip !== backend ? ` (${res.ip})` : ''}`, name: backend, id: hit!.id, ip: res.ip };
-      return { ok: false, why: p.blocked ? `${px.name} cannot reach ${backend} on tcp/${backendPort(v)}: ${p.explain}` : `${backend} does not run this kind of service`, name: backend };
+      if (tripOk(p) && capable) return { ok: true, why: `${px.name} passes ${v.fqdn} to ${backend}${res.ip !== backend ? ` (${res.ip})` : ''}`, name: backend, id: hit!.id, ip: res.ip };
+      return { ok: false, why: !tripOk(p) ? `${px.name} cannot reach ${backend} on tcp/${backendPort(v)}: ${p.explain}` : `${backend} does not run this kind of service`, name: backend };
     }
   }
 }
@@ -127,8 +127,8 @@ function refreshMirrors(s: WorldState, ctx: NetCtx, cache: RuntimeCache): void {
     }
     const px = s.devices[r.upstream];
     if (!hasRole(px, 'fwd_proxy') || !up(px)) { cache.mirrorOk[d.id] = { ok: false, why: 'The chosen forward proxy is down or gone.' }; continue; }
-    const p = resolveFromHost(ctx, d, parseIp(px.ip) ?? 0, 'tcp', ROLES.fwd_proxy.port, 'fwd');
-    if (p.blocked || p.reachedServer !== px.id) { cache.mirrorOk[d.id] = { ok: false, why: `Cannot reach ${px.name} on tcp/3128: ${p.explain}` }; continue; }
+    const p = roundTrip(ctx, d, parseIp(px.ip) ?? 0, 'tcp', ROLES.fwd_proxy.port);
+    if (!tripOk(p, px.id)) { cache.mirrorOk[d.id] = { ok: false, why: `Cannot reach ${px.name} on tcp/3128: ${p.explain}` }; continue; }
     const o = internetOk(s, ctx, px);
     cache.mirrorOk[d.id] = o.ok ? { ok: true, why: `Downloads releases through ${px.name}.` } : { ok: false, why: `${px.name} has no internet: ${o.why}` };
   }
@@ -151,10 +151,10 @@ function refreshDoors(s: WorldState, ctx: NetCtx, cache: RuntimeCache): void {
       if (!up(r)) { why = `the door controller is down`; closed ||= r.failMode === 'closed'; continue; }
       const ip = parseIp(r.authIp);
       if (ip === null) { why = `no Auth server IP set`; closed ||= r.failMode === 'closed'; continue; }
-      const p = resolveFromHost(ctx, r, ip, 'tcp', ROLES.auth.port, 'fwd');
+      const p = roundTrip(ctx, r, ip, 'tcp', ROLES.auth.port);
       const srv = p.reachedServer ? s.devices[p.reachedServer] : undefined;
-      if (!p.blocked && hasRole(srv, 'auth') && up(srv)) { cache.doors[k] = { state: 'locked', why: `checks badges against ${srv.name}` }; break; }
-      why = p.blocked ? `the door cannot reach ${r.authIp} on tcp/389: ${p.explain}` : `${r.authIp} runs no Auth role`;
+      if (tripOk(p) && hasRole(srv, 'auth') && up(srv)) { cache.doors[k] = { state: 'locked', why: `checks badges against ${srv.name}` }; break; }
+      why = !tripOk(p) ? `the door cannot reach ${r.authIp} on tcp/389: ${p.explain}` : `${r.authIp} runs no Auth role`;
       closed ||= r.failMode === 'closed';
     }
     why = why.replace(/\.+$/, '');

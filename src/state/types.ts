@@ -92,6 +92,7 @@ interface DeviceBase {
   ports: Port[];
   health: Health;
   sw?: Software;
+  updateSrc?: string;           // where patches are downloaded from: a mirror's IP, or empty for the internet
   compromised?: Compromise | null;
   temp?: number;                // °C, hottest point of the device
   wear?: number;                // 0–1 ageing of non-server devices (servers track each component)
@@ -161,6 +162,8 @@ export interface ServerRole {
   records?: DnsRecord[];         // local DNS: internal names
   targets?: MonTarget[];         // monitoring master: addresses it polls
   upstream?: DeviceId | 'direct';  // update mirror: how it reaches the internet
+  cachedRelease?: number;        // update mirror: newest release it holds
+  fetchLeft?: number;            // update mirror: ticks left on the current download
 }
 
 export type DiskType = 'hdd' | 'ssd' | 'nvme';
@@ -563,6 +566,9 @@ export interface ResolvedPath {
   ret: ResolvedPath | null;
   /** destination reached (true even if the port was closed) */
   reachedServer: DeviceId | null;
+  /** addresses as the destination saw them (after NAT): who to answer, and from where */
+  srcSeen?: number;
+  dstSeen?: number;
 }
 
 export interface Carrier {
@@ -658,6 +664,9 @@ export interface Job {
   comps?: string[];              // swap: server components to replace
   parts?: ServerParts;           // upgrade: the new configuration
   cold?: boolean;                // swap/upgrade needs the server switched off
+  waitWhy?: string;              // update: why the download is not running
+  waitSince?: number;            // update: tick the download got stuck
+  retryAt?: number;              // update: engineer let go of it; try again from this tick
   paid?: number;                 // money already charged (refunded on cancel)
 }
 

@@ -1,7 +1,7 @@
 // Reference network: two sites behind a routed firewall and a core router.
 // Every value here is what an apprentice would type by hand. Loaded as a
 // sandbox, so it does not award achievements.
-import { CABLE_BANDWIDTH } from '../balance';
+import { CABLE_BANDWIDTH, UPLINK_START } from '../balance';
 import { DEVICE_DEFS } from './devices';
 import { addRoom } from './floor';
 import { cellKey, recomputeAllPaths } from './geometry';
@@ -10,6 +10,8 @@ import { makeEngineer, newWorld } from './world';
 
 export function sampleWorld(): WorldState {
   const s = newWorld();
+  // scripted with the documentation block: keep it instead of a random one
+  for (const d of Object.values(s.devices)) if (d.kind === 'uplink') { d.publicSubnet = UPLINK_START.publicSubnet; d.uplinkIp = UPLINK_START.uplinkIp; }
   s.meta.sandbox = true;
   // keep only the uplink from the starter world
   for (const d of Object.values(s.devices)) if (d.kind !== 'uplink') delete s.devices[d.id];

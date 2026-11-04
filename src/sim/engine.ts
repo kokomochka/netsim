@@ -9,13 +9,12 @@ import {
   REPUTATION_OUTAGE_HIT, ROUTER_CAPACITY_MBPS, SITE_MBPS, SITE_REVENUE, SWITCH_CAPACITY_MBPS, TICKS_PER_SEC,
   UPLINK_TIER, UPTIME_BUCKETS, DISK_TYPES, ENGINEER_SALARY, GPU_REVENUE, INTRUSION_CHECK_S, LATERAL_MBPS,
   ACCESS, AI_MBPS, CLOUD_BASE_MBPS, INTERNET_IP, DNS_MBPS, DNS_REVENUE, DOMAIN_RENEWAL, NAMED_DEMAND_BONUS, REGISTRAR_DNS_FEE, CLOUD_GROWTH_GB_PER_S, CLOUD_PAY_PER_GB, FRONTEND_LINK_MBPS, GPU_LINK_MBPS,
-  LATERAL_SECONDS, PATCH_FIRST_TICK, TRANSIT_DST, DEV_BUG_CHANCE, DEV_BUG_WINDOW_S, DEV_MAX_QUALITY, DEV_QUALITY_STEP, DEV_SECONDS_PER_RELEASE, PATCH_INTERVAL_S, ROLES, TRESPASS_FIRST_TICK, TRESPASS_INTERVAL_S, VULNERABLE_AFTER_S,
-} from '../balance';
+  LATERAL_SECONDS, PATCH_FIRST_TICK, TRANSIT_DST, DEV_BUG_CHANCE, DEV_BUG_WINDOW_S, DEV_MAX_QUALITY, DEV_QUALITY_STEP, DEV_SECONDS_PER_RELEASE, PATCH_INTERVAL_S, ROLES, TRESPASS_FIRST_TICK, TRESPASS_INTERVAL_S, VULNERABLE_AFTER_S, PATCH_FETCH_MBPS, MIRROR_FETCH_S, MIRROR_FETCH_MBPS } from '../balance';
 import { carryComps, diskPrice, freshComps, roleUse, serverCaps, serverPrice, serverUpkeep, specsFor, wipesArray } from '../state/hardware';
 import { compName, effTflops, failedComps, hwFastTick, serverDown, setHwHooks, syncHealth } from './hw';
 import { knownProblems, monitorFlows, noticeTick, setMonitorHooks } from './monitor';
 import { PLAYER_BLOCK_OCTETS } from '../balance';
-import { backendPort } from './net';
+import { backendPort, roundTrip, tripOk } from './net';
 import { cancelJob, compromise, createJob, deskReaches, setStaffHooks, spawnTrespasser, staffTick } from './staff';
 import { checkAchievements } from '../progress';
 import { parseIp } from '../state/ip';
@@ -70,6 +69,7 @@ export function tick(state: WorldState, cache: RuntimeCache): void {
     climateTick(state, cache);
     staffTick(state, cache);
     noticeTick(state, cache);
+    mirrorTick(state, cache);
     if (state.time.tick % TICKS_PER_SEC === 7) backupStamp(state, cache);
     if (state.time.tick % TICKS_PER_SEC === 0) devWork(state, cache);
     if (state.time.tick % 20 === 0) autoJobs(state);
@@ -350,7 +350,7 @@ function serviceAvailability(state: WorldState, cache: RuntimeCache): void {
       const legs = Object.values(state.flows).filter((f) => f.kind === 'proxied' && f.serviceId === svc.id);
       if (legs.length) {
         let lt = 0, lg = 0;
-        for (const f of legs) { const lp = cache.paths[f.id]; lt += f.rateMbps; if (lp && !lp.blocked) lg += f.rateMbps * (cache.delivery[f.id] ?? 1) * latencyFactor(lp.reachedServer ? state.devices[lp.reachedServer] : undefined); }
+        for (const f of legs) { const lp = cache.paths[f.id]; lt += f.rateMbps; if (lp && tripOk(lp)) lg += f.rateMbps * (cache.delivery[f.id] ?? 1) * latencyFactor(lp.reachedServer ? state.devices[lp.reachedServer] : undefined); }
         if (lt > 0) a *= lg / lt;
       }
     }
@@ -445,7 +445,7 @@ function towerAvailability(state: WorldState, cache: RuntimeCache): void {
     const p = sb.flowId ? cache.paths[sb.flowId] : undefined;
     const up = Object.values(state.devices).find((x) => x.kind === 'uplink');
     let a = 0;
-    if (p && !p.blocked && up && p.reachedServer === up.id && !d.compromised && !isOffline(d)) a = cache.delivery[sb.flowId!] ?? 1;
+    if (up && tripOk(p, up.id) && !d.compromised && !isOffline(d)) a = cache.delivery[sb.flowId!] ?? 1;
     sb.availability = a;
     if (a >= 0.5) sb.live = true;
     if (a >= 0.99) { sb.upTicks++; sb.reputation = Math.min(2.5, sb.reputation + REPUTATION_GAIN_PER_MIN / MINUTE); }
@@ -504,8 +504,8 @@ function refreshRoleLinks(state: WorldState, cache: RuntimeCache): void {
         if (isOffline(t) || t.compromised) { res.bad.push({ id, why: `${t.name} is down` }); continue; }
         if (t.id === d.id) { res.ok.push(id); continue; }
         const ip = linkIp(d, t);
-        const p = resolveFromHost(ctx, d, parseIpLocal(ip) ?? 0, 'tcp', tRole.port, 'fwd');
-        if (!p.blocked && p.reachedServer === t.id) res.ok.push(id);
+        const p = roundTrip(ctx, d, parseIpLocal(ip) ?? 0, 'tcp', tRole.port);
+        if (tripOk(p, t.id)) res.ok.push(id);
         else res.bad.push({ id, why: `cannot reach ${t.name} on tcp/${tRole.port}: ${p.explain}` });
       }
       out[`${d.id}:${r.role}`] = res;
@@ -922,6 +922,49 @@ const roleHost = (state: WorldState, id: DeviceId | null, role: string) => {
 };
 
 /** Backup agent is healthy when its NAS is up and the backup flow gets through. */
+/** Can this update job download the release right now? Sets job.waitWhy when not. */
+export function fetchReady(state: WorldState, cache: RuntimeCache, j: Job): boolean {
+  const d = state.devices[j.deviceId];
+  const f = Object.values(state.flows).find((x) => x.kind === 'control' && x.tag === `fetch:${j.id}`);
+  const p = f ? cache.paths[f.id] : undefined;
+  const rel = state.staff.release;
+  const name = d?.name ?? 'It';
+  let why: string | undefined;
+  if (!d) why = 'The device is gone.';
+  else if (!p) why = 'Starting the download…';
+  else if (!tripOk(p)) why = `${name} cannot download release #${rel}: ${p.explain}`;
+  else {
+    const src = d.updateSrc?.trim();
+    const at = p.reachedServer ? state.devices[p.reachedServer] : undefined;
+    if (src) {
+      const role = at?.kind === 'server' ? at.roles.find((r) => r.role === 'mirror') : undefined;
+      if (!role || isOffline(at!) || at!.compromised) why = `${src} is not a working update mirror.`;
+      else if ((role.cachedRelease ?? 0) < rel) why = `${at!.name} has not downloaded release #${rel} yet.`;
+    } else if (at?.kind !== 'uplink') why = `${name} cannot reach the internet to download release #${rel}.`;
+  }
+  if (why !== j.waitWhy) {
+    if (why && !j.waitWhy && d && why !== 'Starting the download…') addLog(state, d.id, `${d.name}: patch waiting: ${why}`, 'warn');
+    j.waitWhy = why;
+  }
+  return !why;
+}
+
+/** Mirrors pull each new release once, while their internet path works. */
+function mirrorTick(state: WorldState, cache: RuntimeCache): void {
+  const rel = state.staff.release;
+  for (const d of Object.values(state.devices)) {
+    if (d.kind !== 'server' || isOffline(d) || d.compromised) continue;
+    const r = d.roles.find((x) => x.role === 'mirror');
+    if (!r || (r.cachedRelease ?? 0) >= rel) continue;
+    if (!cache.mirrorOk?.[d.id]?.ok) continue;
+    r.fetchLeft = (r.fetchLeft ?? MIRROR_FETCH_S * TICKS_PER_SEC) - 1;
+    if (r.fetchLeft > 0) continue;
+    r.cachedRelease = rel;
+    r.fetchLeft = undefined;
+    addLog(state, d.id, `${d.name}: downloaded release #${rel}; devices that use it as update source can patch`, 'info');
+  }
+}
+
 export function backupOk(state: WorldState, cache: RuntimeCache, id: DeviceId): boolean {
   const d = state.devices[id];
   if (d?.kind !== 'server' || !d.agents.backup.enabled) return false;
@@ -930,7 +973,7 @@ export function backupOk(state: WorldState, cache: RuntimeCache, id: DeviceId): 
   if (nas.id === d.id) return true; // local copy: quick restore, but it dies with the server
   const f = Object.values(state.flows).find((x) => x.kind === 'backup' && x.origin === id);
   const p = f ? cache.paths[f.id] : undefined;
-  return !!p && !p.blocked && p.reachedServer === nas.id;
+  return tripOk(p, nas.id);
 }
 
 function syncInternalFlows(state: WorldState, cache: RuntimeCache): void {
@@ -1100,8 +1143,8 @@ export function failoverReady(state: WorldState, ctx: ReturnType<typeof buildCtx
   if (p.roles.some((r) => ROLES[r.role].stateful)) {
     const san = roleHost(state, p.agents.failover.sanId, 'san');
     if (!san || san.health.state === 'failed') return { ok: false, why: 'Stateful roles need shared SAN storage that is up' };
-    const r = resolveFromHost(ctx, b, parseIpLocal(san.ip) ?? 0, 'tcp', ROLES.san.port, 'fwd');
-    if (r.blocked) return { ok: false, why: `Standby cannot reach the SAN: ${r.explain}` };
+    const r = roundTrip(ctx, b, parseIpLocal(san.ip) ?? 0, 'tcp', ROLES.san.port);
+    if (!tripOk(r)) return { ok: false, why: `Standby cannot reach the SAN: ${r.explain}` };
   }
   return { ok: true, why: 'Ready: the standby answers for this server\'s IP if it goes down' };
 }
@@ -1252,12 +1295,12 @@ function stats(state: WorldState, cache: RuntimeCache): void {
   // a switch with ≥3 hosts that is carrying a working site's traffic
   const busy = new Set<DeviceId>();
   for (const svc of svcs) {
-    if (svc.availability < 0.5) continue;
+    if (svc.availability <= 0) continue;
     // any working entry point of the site counts, not only the first public address
     for (const id of svc.flowIds ?? []) {
       const p = cache.paths[id];
-      if (!p || p.blocked) continue;
-      for (const h of p.hops) {
+      if (!tripOk(p)) continue;
+      for (const h of p!.hops) {
         const d = state.devices[h.deviceId];
         if (d?.kind === 'switch') busy.add(d.id);
       }
@@ -1293,7 +1336,7 @@ export function addLog(state: WorldState, deviceId: DeviceId, msg: string, level
 
 export function initSimulation(state: WorldState, cache: RuntimeCache): void {
   runtimeRef = cache;
-  setStaffHooks({ notify, log: addLog, finishJob });
+  setStaffHooks({ notify, log: addLog, finishJob, fetchReady });
   setClimateHooks({ notify, log: addLog });
   setHwHooks({ notify, log: addLog });
   setMonitorHooks({ notify, log: addLog });
@@ -1381,6 +1424,15 @@ function controlFlows(state: WorldState, cache: RuntimeCache, want: Map<string, 
     else if (e.devOn) { const v = state.services[e.devOn]; if (v) add(`deploy:${e.id}`, desk.id, firstIp(state.devices[v.serverId]), 'tcp', 22, 1); }
   }
   monitorFlows(state, want, add);
+  // patch downloads: the device being updated fetches the release itself
+  for (const j of Object.values(state.staff.jobs)) {
+    if (j.kind !== 'update' || !j.started) continue;
+    const d = state.devices[j.deviceId];
+    if (!d) continue;
+    const src = d.updateSrc?.trim();
+    if (src) add(`fetch:${j.id}`, d.id, src, 'tcp', ROLES.mirror.port, PATCH_FETCH_MBPS);
+    else add(`fetch:${j.id}`, d.id, INTERNET_IP, 'tcp', 443, PATCH_FETCH_MBPS);
+  }
   for (const d of Object.values(state.devices)) {
     if (d.kind === 'badge' && d.authIp) add(`ldap:${d.id}`, d.id, d.authIp, 'tcp', ROLES.auth.port, 0.2);
     if (d.kind !== 'server') continue;
@@ -1388,12 +1440,13 @@ function controlFlows(state: WorldState, cache: RuntimeCache, want: Map<string, 
     if (d.dns && needsNames) add(`dns:${d.id}`, d.id, d.dns, 'udp', 53, 0.2);
     if (d.roles.some((r) => r.role === 'dns_local')) add(`dnsfwd:${d.id}`, d.id, INTERNET_IP, 'udp', 53, 0.3);
     const m = d.roles.find((r) => r.role === 'mirror');
-    if (m) {
-      if (!m.upstream || m.upstream === 'direct') add(`mirror:${d.id}`, d.id, INTERNET_IP, 'tcp', 443, 3);
+    // a mirror only talks to the internet while it pulls a release it does not have
+    if (m && (m.cachedRelease ?? 0) < state.staff.release) {
+      if (!m.upstream || m.upstream === 'direct') add(`mirror:${d.id}`, d.id, INTERNET_IP, 'tcp', 443, MIRROR_FETCH_MBPS);
       else {
         const px = state.devices[m.upstream];
-        add(`mirror:${d.id}`, d.id, firstIp(px), 'tcp', ROLES.fwd_proxy.port, 3);
-        if (px) add(`fwdproxy:${px.id}`, px.id, INTERNET_IP, 'tcp', 443, 3);
+        add(`mirror:${d.id}`, d.id, firstIp(px), 'tcp', ROLES.fwd_proxy.port, MIRROR_FETCH_MBPS);
+        if (px) add(`fwdproxy:${px.id}`, px.id, INTERNET_IP, 'tcp', 443, MIRROR_FETCH_MBPS);
       }
     }
   }

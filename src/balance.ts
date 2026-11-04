@@ -158,7 +158,10 @@ export const DEVICE_WATTS: Record<DeviceKind, { idle: number; load: number; r: n
 export const MON_AGENT_PORT = 10050;         // master polls the server agent (tcp)
 export const MON_CONSOLE_PORT = 80;          // engineers open the master's web console
 export const SNMP_PORT = 161;                // master polls network devices (udp)
-export const POLL_TIMEOUT_S = 6;             // silent this long → "stopped answering" alert
+export const POLL_TIMEOUT_S = 6;
+export const PATCH_FETCH_MBPS = 8;           // a device downloading a release
+export const MIRROR_FETCH_S = 20;            // a mirror pulling a new release from the internet
+export const MIRROR_FETCH_MBPS = 25;             // silent this long → "stopped answering" alert
 export const NOTICE_RADIUS = 2;              // cells: an engineer this close sees blinking LEDs
 export const CERT_PRICE = 60;
 export const CERT_UPKEEP = 0.004;
@@ -201,7 +204,7 @@ export const ROLES: Record<RoleKind, RoleDef> = {
   nas:          { label: 'NAS', blurb: 'File storage on tcp/445. Backup agents and cloud storage keep data here.', port: 445, proto: 'tcp', cores: 1, ramGB: 4, diskGB: 500, public: false, stateful: true },
   san:          { label: 'SAN', blurb: 'Fast shared block storage (iSCSI tcp/3260). Cloud storage and failover of stateful roles use it.', port: 3260, proto: 'tcp', cores: 2, ramGB: 8, diskGB: 2000, needsFastDisk: true, public: false, stateful: true },
   auth:         { label: 'Auth / directory', blurb: 'Logins and badge checks (LDAP tcp/389). Smart doors only lock while one runs.', port: 389, proto: 'tcp', cores: 1, ramGB: 2, diskGB: 20, public: false, stateful: true },
-  mirror:       { label: 'Update mirror', blurb: 'Local patch cache on tcp/8080. Once it can download releases from the internet (directly through NAT, or via a forward proxy), remote updates take half the time.', port: 8080, proto: 'tcp', cores: 1, ramGB: 2, diskGB: 200, public: false, stateful: false },
+  mirror:       { label: 'Update mirror', blurb: 'Local patch cache on tcp/8080. It downloads each new release once (directly through NAT, or via a forward proxy); devices whose update source is its IP fetch from it instead of the internet, and patch in half the time.', port: 8080, proto: 'tcp', cores: 1, ramGB: 2, diskGB: 200, public: false, stateful: false },
   proxy:        { label: 'Reverse proxy', blurb: 'Takes web traffic on one public IP (tcp/80 and 443) and passes each request to the back end mapped to the name the visitor asked for. Many sites, one IP.', port: 443, ports: [80, 443], proto: 'tcp', cores: 1, ramGB: 2, diskGB: 10, public: false, stateful: false },
   fwd_proxy:    { label: 'Forward proxy', blurb: 'Lets internal servers reach the internet through it (tcp/3128), e.g. the update mirror fetching releases. Needs internet access itself.', port: 3128, proto: 'tcp', cores: 1, ramGB: 2, diskGB: 20, public: false, stateful: false },
   dns_local:    { label: 'Local DNS', blurb: 'Answers internal names such as app1.lan on udp/53. Hosts use it when you set it as their DNS server.', port: 53, proto: 'udp', cores: 1, ramGB: 1, diskGB: 5, public: false, stateful: false },

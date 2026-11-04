@@ -1185,7 +1185,12 @@ export class NsInspector extends HTMLElement {
       box.appendChild(f);
       box.appendChild(this.liveBlock(() => {
         const m = runtime.mirrorOk[d.id];
-        return el('div', `explain ${m?.ok ? 'ok' : 'bad'}`, m ? (m.ok ? `${m.why} Remote updates take half the time.` : `${m.why} Until it can download releases it does not speed anything up.`) : 'Checking…');
+        const st = world.get();
+        const role = (st.devices[d.id] as DeviceOf<'server'> | undefined)?.roles.find((x) => x.role === 'mirror');
+        const have = role?.cachedRelease ?? 0;
+        const rel = st.staff.release;
+        const cache = have >= rel ? `Holds release #${rel}.` : role?.fetchLeft !== undefined ? `Downloading release #${rel}… ${Math.ceil(role.fetchLeft / TICKS_PER_SEC)} s left.` : `Does not have release #${rel} yet.`;
+        return el('div', `explain ${m?.ok ? 'ok' : 'bad'}`, m ? (m.ok ? `${m.why} ${cache} Devices fetch from it when their update source is ${d.ip || 'its IP'}.` : `${m.why} ${cache}`) : 'Checking…');
       }));
       return box;
     }
@@ -1313,12 +1318,29 @@ export class NsInspector extends HTMLElement {
     if (d.sw.patch < s.staff.release && !job) {
       sec.appendChild(btn('Push update', () => { let e: string | null = null; world.update((w) => { e = orderUpdate(w, d.id); }); if (e) toast(e, 'error'); }, 'add', 'Queue the update for an engineer'));
     }
+    const f = el('label', 'field');
+    f.appendChild(el('span', undefined, 'Update source'));
+    f.appendChild(makeInput('sw-src', d.updateSrc ?? '', {
+      placeholder: 'internet (tcp/443)', ariaLabel: 'Update source', check: d.updateSrc ? checkIp(d.updateSrc, '') : null,
+      onCommit: (v) => world.update((w) => { const x = w.devices[d.id]; if (x) x.updateSrc = v.trim(); }),
+    }));
+    sec.appendChild(f);
+    sec.appendChild(el('p', 'sub', d.updateSrc?.trim()
+      ? `Patches download from the mirror at ${d.updateSrc.trim()} on tcp/8080, and take half the time.`
+      : 'Patches download from the internet on tcp/443: this needs a way out (NAT). Type an update mirror\'s IP to fetch locally instead.'));
+    sec.appendChild(this.liveBlock(() => {
+      const st = world.get();
+      const j = Object.values(st.staff.jobs).find((x) => x.deviceId === d.id && x.kind === 'update');
+      if (j?.waitWhy && (j.started || j.retryAt !== undefined)) return el('div', 'explain warn', `Patch waiting: ${j.waitWhy}${!j.started && j.retryAt ? ` Retrying in ${Math.max(0, Math.ceil((j.retryAt - st.time.tick) / TICKS_PER_SEC))} s.` : ''}`);
+      return el('span');
+    }));
     sec.appendChild(this.liveText(() => {
       const st = world.get();
       const j = Object.values(st.staff.jobs).find((x) => x.deviceId === d.id);
       if (!j) return st.staff.autoPatch ? 'Engineers patch new releases automatically (Staff tab).' : 'Auto-patching is off.';
       const e = j.engineerId ? st.staff.engineers[j.engineerId] : undefined;
-      if (!e) return 'Queued: waiting for a free engineer.';
+      if (!e) return j.retryAt !== undefined && st.time.tick < j.retryAt ? 'Queued: the download could not start, so the engineer moved on.' : 'Queued: waiting for a free engineer.';
+      if (j.kind === 'update' && j.started && !j.waitWhy) return `${e.name} is patching it${j.remote ? ' remotely from a desk' : ' on site'}; the release is downloading.`;
       return j.remote ? `${e.name} is patching it remotely from a desk.` : j.started ? `${e.name} is working on it on site.` : `${e.name} is on the way.`;
     }, 'note'));
     return sec;

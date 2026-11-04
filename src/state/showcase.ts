@@ -6,7 +6,7 @@
 //                         └ Cell site (fibre)
 //   12 servers: 6 websites, NAS + cloud, SAN, AI frontend/orchestrator, 2 GPU workers
 //   Vents in the partition and to the outside, two AC units, parking below.
-import { CABLE_BANDWIDTH } from '../balance';
+import { CABLE_BANDWIDTH, UPLINK_START } from '../balance';
 import { DEVICE_DEFS } from './devices';
 import { addRoom } from './floor';
 import { cellKey, recomputeAllPaths } from './geometry';
@@ -16,6 +16,8 @@ import { makeEngineer, newWorld } from './world';
 
 export function showcaseWorld(): WorldState {
   const s = newWorld();
+  // scripted with the documentation block: keep it instead of a random one
+  for (const d of Object.values(s.devices)) if (d.kind === 'uplink') { d.publicSubnet = UPLINK_START.publicSubnet; d.uplinkIp = UPLINK_START.uplinkIp; }
   s.meta.sandbox = true;
   for (const k of Object.keys(s.unlocks) as (keyof typeof s.unlocks)[]) s.unlocks[k] = true;
   s.unlocks.throttling = true;

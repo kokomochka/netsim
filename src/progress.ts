@@ -230,7 +230,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   {
     id: 'way_out',
     title: 'Way out',
-    goal: 'Get an internal server to the internet: an update mirror, DNS forwarder or forward proxy downloading through a static NAT entry.',
+    goal: 'Get an internal machine to the internet through a static NAT entry: a patch download, an update mirror, DNS forwarder or forward proxy.',
     how: [
       'Give a server with a private address the Update mirror role (upstream: direct) or the Forward proxy role.',
       'The internet cannot answer 192.168.x.x. On your edge firewall add a static NAT entry: a free public IP → that server.',
@@ -244,7 +244,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
       const up = Object.values(s.devices).find((d) => d.kind === 'uplink');
       if (!up) return 0;
       return Object.values(s.flows).some((f) => {
-        if (f.kind !== 'control' || !/^(mirror|fwdproxy|dnsfwd):/.test(f.tag ?? '')) return false;
+        if (f.kind !== 'control' || !/^(mirror|fwdproxy|dnsfwd|fetch):/.test(f.tag ?? '')) return false;
         const p = c.paths[f.id];
         const o = s.devices[f.origin];
         const ip = o && 'ip' in o ? o.ip : '';

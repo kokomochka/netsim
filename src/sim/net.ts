@@ -402,6 +402,8 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
           return b.ok(`Reply delivered to ${d.name}.`);
         }
         b.p.reachedServer = d.id;
+        b.p.srcSeen = pkt.src;
+        b.p.dstSeen = pkt.dst;
         const mgmt = pkt.proto === 'tcp' && pkt.dport === MGMT_PORT;
         const snmp = pkt.proto === 'udp' && pkt.dport === SNMP_PORT && d.kind !== 'server';
         const agent = d.kind === 'server' && pkt.proto === 'tcp' && pkt.dport === MON_AGENT_PORT && !!d.agents.monitor?.enabled;
@@ -451,6 +453,7 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
             return b.block('bogon_src', `Traffic reached the ISP with private source ${ipStr(pkt.src)}. Add a static NAT entry for it on your edge device${ctx.s.unlocks.dynamicNat ? ', or a dynamic NAT rule for its network' : ''}, or give it a public IP.`);
           }
           b.p.reachedServer = d.id;
+          b.p.srcSeen = pkt.src;
           b.p.resources.push(`dev:${d.id}`);
           h.note = `carries it out to the internet from ${ipStr(pkt.src)} over your ${d.bandwidthMbps} Mbps line`;
           return b.ok('Reaches the internet through your ISP uplink.');
@@ -489,9 +492,17 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
         }
         // is it for this box?
         if (l3Ifaces(ctx, d).some((i) => i.ip === pkt.dst)) {
+          if (pkt.dir === 'ret') {
+            // the answer to a connection the box opened itself (firmware download)
+            h.note = [...notes, 'receives the reply'].join(' · ');
+            b.p.reachedServer = d.id;
+            return b.ok(`Reply delivered to ${d.name}.`);
+          }
           if (((pkt.proto === 'tcp' && pkt.dport === MGMT_PORT) || (pkt.proto === 'udp' && pkt.dport === SNMP_PORT)) && pkt.dir === 'fwd') {
             h.note = [...notes, pkt.dport === SNMP_PORT ? 'answers the SNMP poll' : 'accepts the SSH management session'].join(' · ');
             b.p.reachedServer = d.id;
+            b.p.srcSeen = pkt.src;
+            b.p.dstSeen = pkt.dst;
             return b.ok(`Delivered to ${d.name}.`);
           }
           h.note = [...notes, 'traffic is addressed to the device itself'].join(' · ');
@@ -622,6 +633,50 @@ export function resolveReply(ctx: NetCtx, server: Device, visitor: number, sport
   return resolveFromHost(ctx, server, visitor, 'tcp', sport, 'ret', 0, vip);
 }
 
+/** Traffic a router or firewall starts itself, e.g. fetching a firmware update.
+ *  It leaves by its own routing table, from the address of the exit port. */
+export function resolveFromL3(ctx: NetCtx, dev: L3Device, dst: number, proto: Pkt['proto'], dport: number, mbps = 0): ResolvedPath {
+  const b = new PathBuilder();
+  const rt = lookupRoute(ctx, dev, dst);
+  if (!rt) { b.hop({ deviceId: dev.id, inPort: null, outPort: null, note: `no route to ${ipStr(dst)}` }); return b.block('no_route', `${dev.name} has no route to ${ipStr(dst)}. Add a default route.`); }
+  const src = parseIp(dev.interfaces.find((i) => i.port === rt.port)?.ip ?? '') ?? 0;
+  b.hop({ deviceId: dev.id, inPort: null, outPort: rt.port, note: `sends ${proto}/${dport} itself: ${rt.desc}` });
+  const pkt: Pkt = { src, srcAny: false, dst, proto, sport: 50000, dport, syn: false, mbps, dir: 'fwd' };
+  return routeOnward(ctx, b, dev, rt.port, rt.nextHop ?? dst, pkt);
+}
+
+/** Replies that come back from the internet retrace the request: NAT and the firewalls
+ *  keep state for the connection, so the way out is the way back. */
+function retrace(p: ResolvedPath): ResolvedPath {
+  const n = p.hops.length;
+  const hops = p.hops.map((_, j) => {
+    const h = p.hops[n - 1 - j]!;
+    return { deviceId: h.deviceId, inPort: h.outPort, outPort: h.inPort, cableId: p.hops[n - 2 - j]?.cableId ?? null, note: j === 0 ? 'the internet answers' : 'passes the reply back (connection state)' };
+  });
+  return { ...p, hops, ret: null, floodCables: [], resources: [], reachedServer: p.hops[0]?.deviceId ?? null, explain: 'The reply comes back the same way.' };
+}
+
+/** Request and reply. The answer must make it back through real routes and firewalls,
+ *  so a missing return route or gateway shows up as a broken connection. */
+export function roundTrip(ctx: NetCtx, from: Device, dst: number, proto: Pkt['proto'], dport: number, mbps = 0): ResolvedPath {
+  const p = from.kind === 'router' || from.kind === 'firewall'
+    ? resolveFromL3(ctx, from, dst, proto, dport, mbps)
+    : resolveFromHost(ctx, from, dst, proto, dport, 'fwd', mbps);
+  if (p.blocked || !p.reachedServer || p.reachedServer === from.id) return p;
+  const dev = ctx.s.devices[p.reachedServer];
+  if (!dev) return p;
+  if (dev.kind === 'uplink') p.ret = retrace(p);
+  else if (dev.kind === 'router' || dev.kind === 'firewall') p.ret = resolvePollReply(ctx, dev, dst, p.srcSeen ?? 0, proto, dport);
+  else p.ret = resolveFromHost(ctx, dev, p.srcSeen ?? 0, proto, dport, 'ret', 0, p.dstSeen ?? dst);
+  if (p.ret.blocked) p.explain = `The request arrives, but the reply fails: ${p.ret.explain}`;
+  return p;
+}
+
+/** A connection works only if the reply made it back too. */
+export function tripOk(p: ResolvedPath | undefined, to?: DeviceId): boolean {
+  return !!p && !p.blocked && !!p.reachedServer && (to === undefined || p.reachedServer === to) && !(p.ret && p.ret.blocked);
+}
+
 /** Roles that speak HTTP: tcp/80, or tcp/443 with a certificate. */
 const HTTP_ROLES = new Set(['web', 'cloud', 'ai_frontend']);
 
@@ -667,15 +722,7 @@ export function resolveFlow(ctx: NetCtx, flow: Flow): ResolvedPath {
   if (flow.origin !== 'external') {
     const host = ctx.s.devices[flow.origin];
     if (!host) { const b = new PathBuilder(); return b.block('link_down', 'Source is gone.'); }
-    const p = resolveFromHost(ctx, host, parseIp(flow.dstIp) ?? 0, flow.protocol, flow.dstPort, 'fwd', flow.rateMbps);
-    if (flow.kind === 'control' && flow.tag?.startsWith('poll:') && !p.blocked && p.reachedServer && p.reachedServer !== host.id) {
-      const dev = ctx.s.devices[p.reachedServer];
-      if (dev) {
-        p.ret = resolvePollReply(ctx, dev, parseIp(flow.dstIp) ?? 0, parseIp(host.kind === 'server' ? host.ip : '') ?? 0, flow.protocol, flow.dstPort);
-        if (p.ret.blocked) p.explain = `The poll arrives, but the reply fails: ${p.ret.explain}`;
-      }
-    }
-    return p;
+    return roundTrip(ctx, host, parseIp(flow.dstIp) ?? 0, flow.protocol, flow.dstPort, flow.rateMbps);
   }
   const pkt = packetFor(flow);
   const p = resolveInbound(ctx, pkt);
