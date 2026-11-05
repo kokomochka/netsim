@@ -1,4 +1,5 @@
 // The two stores (saved world + transient UI) and every world mutation. Phase 2.
+import { seeded } from '../rng';
 import { CERT_PRICE, CHASSIS, ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TLDS, MAX_DISKS, MAX_SERVER_PORTS, MEDIA_SWAP_PRICE, OUTSIDE_TEMP, ENGINEER_HIRE, ROLES, START_BALANCE, TILE_PRICE, UPLINK_TIER, UPTIME_BUCKETS, PLAYER_BLOCK_OCTETS, PUBLIC_BLOCK_UPGRADES, UPLINK_START } from '../balance';
 import { freshAchievements } from '../progress';
 import { DEVICE_DEFS, SERVER_PORT_LAYOUT, defOf } from './devices';
@@ -106,7 +107,7 @@ export function newWorld(): WorldState {
   const id = nextId(s, 'dev');
   s.devices[id] = DEVICE_DEFS.uplink.create(id, 'ISP Uplink', { gx: 2, gy: 6 });
   // every new game gets its own /28 from the ISP
-  const blk = testFlags.fixedPublicBlock ? { subnet: UPLINK_START.publicSubnet, gateway: UPLINK_START.uplinkIp } : randomPublicBlock();
+  const blk = testFlags.fixedPublicBlock ? { subnet: UPLINK_START.publicSubnet, gateway: UPLINK_START.uplinkIp } : randomPublicBlock(s.meta.seed);
   const up = s.devices[id]!;
   if (up.kind === 'uplink') { up.publicSubnet = blk.subnet; up.uplinkIp = blk.gateway; }
   const sid = nextId(s, 'dev');
@@ -364,11 +365,12 @@ export function resetWorld(): void {
 // ---------- services, roles, hardware ----------
 
 /** A random /28 out of the ISP's ranges; the ISP router takes the first address. */
-export function randomPublicBlock(): { subnet: string; gateway: string } {
-  const a = PLAYER_BLOCK_OCTETS[Math.floor(Math.random() * PLAYER_BLOCK_OCTETS.length)]!;
-  const b = 1 + Math.floor(Math.random() * 254);
-  const c = Math.floor(Math.random() * 256);
-  const d = Math.floor(Math.random() * 16) * 16;
+export function randomPublicBlock(seed = (Math.random() * 2 ** 31) | 0): { subnet: string; gateway: string } {
+  const r = seeded(seed ^ 0x5eed);
+  const a = PLAYER_BLOCK_OCTETS[Math.floor(r() * PLAYER_BLOCK_OCTETS.length)]!;
+  const b = 1 + Math.floor(r() * 254);
+  const c = Math.floor(r() * 256);
+  const d = Math.floor(r() * 16) * 16;
   return { subnet: `${a}.${b}.${c}.${d}/28`, gateway: `${a}.${b}.${c}.${d + 1}` };
 }
 

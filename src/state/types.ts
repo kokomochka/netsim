@@ -117,6 +117,9 @@ export interface NatEntry {
   id: string;
   publicIp: string;   // address visitors use
   privateIp: string;  // real address of the server
+  proto?: 'tcp' | 'udp';   // port forwarding: only this protocol and port…
+  publicPort?: number;
+  privatePort?: number;    // …sent on to this port (default: the same one)
 }
 
 export interface DhcpPool {
@@ -727,7 +730,7 @@ export interface LogEntry {
 export interface Camera { x: number; y: number; scale: number }
 
 export interface WorldState {
-  meta: { version: number; seed: number; saveTimestamp: number; playTimeTicks: number; sandbox?: boolean };
+  meta: { version: number; seed: number; saveTimestamp: number; playTimeTicks: number; rng?: number; sandbox?: boolean };
   camera: Camera;
   speed: 0 | 1 | 2 | 4;
   economy: Economy;

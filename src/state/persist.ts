@@ -1,5 +1,6 @@
 import { normMask } from './ip';
 // Save / load (architecture v2, §11). Phase 2: migration from v1→v2.
+import { rngState } from '../rng';
 import { START_BALANCE, UPTIME_BUCKETS } from '../balance';
 import { get, set } from '../lib/idb-keyval';
 import { macFor } from './devices';
@@ -333,7 +334,7 @@ export function splitProxyRules(state: WorldState): void {
 }
 
 export function serialize(state: WorldState): string {
-  return JSON.stringify({ ...state, meta: { ...state.meta, saveTimestamp: Date.now() } });
+  return JSON.stringify({ ...state, meta: { ...state.meta, saveTimestamp: Date.now(), rng: rngState() } });
 }
 
 export function deserialize(json: string): WorldState | null {

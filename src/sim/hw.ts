@@ -12,6 +12,7 @@
 //    engineer swaps the drive and it rebuilds. Lose more than it tolerates
 //    and the data is gone unless a backup exists.
 
+import { random } from '../rng';
 import {
   BASE_HAZARD, BOARD_WATTS, CHASSIS, CLOCK_MIN, CPU_PARTS, DEVICE_WATTS, DISK_TYPES, FAILURE_GRACE_TICKS, FAN_WATTS, GPU_PARTS, INFANT_MUL,
   INFANT_S, LIFE_S, LIFE_S_DEVICE, NIC_PARTS, PSU_EFFICIENCY, RAID, RAM_CRASH_S, RAM_PARTS, REBOOT_S, REBUILD_S, RESTART_C, SHUTDOWN_C,
@@ -26,7 +27,7 @@ type Hooks = {
 let hooks: Hooks | null = null;
 export function setHwHooks(h: Hooks): void { hooks = h; }
 
-const rand = (a: number, b: number) => a + Math.random() * (b - a);
+const rand = (a: number, b: number) => a + random() * (b - a);
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
 
 export const COMP_LABEL: Record<Component['kind'], string> = {
@@ -207,7 +208,7 @@ export function serverSecond(s: WorldState, c: RuntimeCache, d: ServerDevice, in
     if (t < FAILURE_GRACE_TICKS) continue;
     const hz = BASE_HAZARD * (x.age < INFANT_S ? INFANT_MUL : 1) * (1 + WEAR_HAZARD * Math.pow(x.wear, 4))
       * (x.kind === 'disk' ? DISK_TYPES[d.parts.diskType].faultMul : 1);
-    if (Math.random() < hz) failComp(s, c, d, x);
+    if (random() < hz) failComp(s, c, d, x);
   }
 
   // RAID
@@ -257,11 +258,11 @@ export function deviceSecond(s: WorldState, c: RuntimeCache, d: Device, inlet: n
   h.hp = Math.round(100 * (1 - clamp(d.wear, 0, 1)));
   if (s.time.tick < FAILURE_GRACE_TICKS) return;
   const hz = BASE_HAZARD * 2 * ((d.age ?? 0) < INFANT_S ? INFANT_MUL : 1) * (1 + WEAR_HAZARD * Math.pow(d.wear, 4));
-  if (Math.random() >= hz) return;
+  if (random() >= hz) return;
   // a port dies, or the whole box
   const used = d.ports.filter((p) => p.up && Object.values(s.cables).some((cb) => (cb.a.deviceId === d.id && cb.a.port === p.index) || (cb.b.deviceId === d.id && cb.b.port === p.index)));
-  if (used.length > 1 && Math.random() < 0.35 && !h.fault) {
-    const p = used[Math.floor(Math.random() * used.length)]!;
+  if (used.length > 1 && random() < 0.35 && !h.fault) {
+    const p = used[Math.floor(random() * used.length)]!;
     p.up = false;
     h.fault = 'nic'; h.faultPort = p.index; h.state = 'warning';
   } else {

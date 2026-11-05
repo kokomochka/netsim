@@ -10,6 +10,7 @@
 //    gets past smart doors only while no auth server runs, and is caught when
 //    an engineer gets close.
 
+import { random } from '../rng';
 import {
   DESK_MAX_ROOM_C, HACK_SECONDS, SWAP_SECONDS, MGMT_PORT, ROLES, RUSH_SPEED, SIGHT_RADIUS, SPOT_RADIUS, TICKS_PER_SEC, WALK_SPEED, WORK_SECONDS,
 } from '../balance';
@@ -31,7 +32,7 @@ let hooks: {
 } | null = null;
 export function setStaffHooks(h: typeof hooks): void { hooks = h; }
 
-const rnd = (a: number, b: number) => a + Math.random() * (b - a);
+const rnd = (a: number, b: number) => a + random() * (b - a);
 
 // ─── Environment ────────────────────────────────────────────────────────────
 
@@ -278,7 +279,7 @@ function tickEngineer(s: WorldState, c: RuntimeCache, e: Engineer): void {
   // idle without a desk: stand a while, then wander a few cells
   if (e.deskId) { goHome(s, e); return; }
   if (s.time.tick < e.idleUntil) return;
-  if (Math.random() < 0.35) { e.idleUntil = s.time.tick + Math.round(rnd(4, 10) * TICKS_PER_SEC); return; }
+  if (random() < 0.35) { e.idleUntil = s.time.tick + Math.round(rnd(4, 10) * TICKS_PER_SEC); return; }
   const here = cellOf(e);
   const ev = env(s);
   for (let tries = 0; tries < 12; tries++) {
@@ -299,8 +300,8 @@ export function spawnTrespasser(s: WorldState): string {
   if (!open.length) return 'A stranger walked past the building, saw staff watching every machine and left.';
   const spawns = edgeSpawns(s.floor);
   if (!spawns.length) return '';
-  const target = open[Math.floor(Math.random() * open.length)]!;
-  const start = spawns[Math.floor(Math.random() * spawns.length)]!;
+  const target = open[Math.floor(random() * open.length)]!;
+  const start = spawns[Math.floor(random() * spawns.length)]!;
   const t: Trespasser = { id: `tre_${s.nextId++}`, x: start.gx + 0.5, y: start.gy + 0.5, path: [], targetId: target.id, state: 'approach', progress: 0, spotted: false };
   const spots = workSpots(s.floor, env(s), 'trespasser', target.gridPos);
   if (!routeTo(s, t, 'trespasser', spots)) {

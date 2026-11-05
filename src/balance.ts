@@ -159,6 +159,16 @@ export const MON_AGENT_PORT = 10050;         // master polls the server agent (t
 export const MON_CONSOLE_PORT = 80;          // engineers open the master's web console
 export const SNMP_PORT = 161;                // master polls network devices (udp)
 export const POLL_TIMEOUT_S = 6;
+/** Share of a flow's rate on the request leg and on the reply leg.
+ *  Visitors download pages (small request, big reply); cloud customers upload. */
+export const FLOW_SHAPE = {
+  page: { req: 0.1, resp: 1 },
+  upload: { req: 1, resp: 0.1 },
+  download: { req: 0.05, resp: 1 },
+  even: { req: 1, resp: 1 },
+} as const;
+/** Visitor demand grows ever slower: reputation × quality × name × TLS saturates near 1 + this. */
+export const DEMAND_SOFT_CAP = 2.5;
 export const PATCH_FETCH_MBPS = 8;           // a device downloading a release
 export const MIRROR_FETCH_S = 20;            // a mirror pulling a new release from the internet
 export const MIRROR_FETCH_MBPS = 25;             // silent this long → "stopped answering" alert

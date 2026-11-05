@@ -99,7 +99,8 @@ const INSPECTOR_CSS = `
   .if-row { grid-template-columns: 50px minmax(0, 1fr); }
   .rt-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 46px 28px; }
   .nat-row { grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) 28px; }
-  .nat-row .arrow { color: var(--ink-faint); text-align: center; }
+  .nat-row .arrow, .natp-row .arrow { color: var(--ink-faint); text-align: center; }
+  .natp-row { grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) 92px 28px; }
   .pat-row { grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) 28px; }
   .pat-row .arrow { color: var(--ink-faint); text-align: center; }
   .mt-row { grid-template-columns: minmax(0, 1fr) 150px 28px; }
@@ -634,14 +635,18 @@ export class NsInspector extends HTMLElement {
     const edit = (fn: (x: RouterDevice | FirewallDevice) => void) => editL3(d.id, fn);
     const s = world.get();
     const sec = section(heading('Static NAT', `${d.nat.length}`));
-    sec.appendChild(el('p', 'note', 'Maps a public address to a server\'s private one. Requests are translated on the way in, replies on the way out. This device answers ARP for the public address.'));
+    sec.appendChild(el('p', 'note', 'Maps a public address to a private one. Leave the port empty to map the whole address; type a port ("tcp 443", "tcp 2222→22") to forward just that port, so one public IP can lead to several servers.'));
     d.nat.forEach((n, i) => {
       const c = natCheck(s, d as RouterDevice | FirewallDevice, n.publicIp, n.privateIp);
       const upd = (fn: (x: typeof n) => void) => edit((x) => { const r = x.nat[i]; if (r) fn(r); });
-      const row = el('div', 'row nat-row');
+      const row = el('div', 'row natp-row');
       row.appendChild(makeInput(`${n.id}-pub`, n.publicIp, { placeholder: publicIps(s)[3] ?? '203.0.113.5', ariaLabel: 'Public IP', onCommit: (v) => upd((x) => { x.publicIp = v; }) }));
       row.appendChild(el('span', 'arrow', '→'));
       row.appendChild(makeInput(`${n.id}-priv`, n.privateIp, { placeholder: '192.168.10.10', ariaLabel: 'Private IP', onCommit: (v) => upd((x) => { x.privateIp = v; }) }));
+      row.appendChild(makeInput(`${n.id}-port`, natPortText(n), {
+        placeholder: 'all ports', ariaLabel: 'Ports (e.g. tcp 2222→22)',
+        onCommit: (v) => { const r = parseNatPort(v); if (typeof r === 'string') { toast(r, 'error'); this.schedule(); return; } upd((x) => { x.proto = r.proto; x.publicPort = r.publicPort; x.privatePort = r.privatePort; }); },
+      }));
       row.appendChild(btn('✕', () => edit((x) => { x.nat.splice(i, 1); }), 'icon-btn danger', 'Delete NAT entry'));
       sec.appendChild(row);
       const m = makeMsgs([c]);
@@ -1802,4 +1807,22 @@ export function renderTrace(s: WorldState, p: ResolvedPath | undefined, oneWay =
   if (p.ret) add(p.ret, '←');
   box.appendChild(list);
   return box;
+}
+
+/** "tcp 2222→22" for a port forward, "" for a whole-address entry. */
+function natPortText(n: { proto?: string; publicPort?: number; privatePort?: number }): string {
+  if (!n.publicPort) return '';
+  const to = n.privatePort && n.privatePort !== n.publicPort ? `→${n.privatePort}` : '';
+  return `${n.proto ?? 'tcp'} ${n.publicPort}${to}`;
+}
+
+/** Read "443", "tcp 443", "udp 53", "tcp 2222→22" (or "2222:22", "2222->22"); empty = all ports. */
+function parseNatPort(v: string): { proto?: 'tcp' | 'udp'; publicPort?: number; privatePort?: number } | string {
+  const t = v.trim().toLowerCase();
+  if (!t || t === 'all' || t === 'any') return { proto: undefined, publicPort: undefined, privatePort: undefined };
+  const m = /^(tcp|udp)?\s*\/?\s*(\d{1,5})\s*(?:(?:→|->|:|>)\s*(\d{1,5}))?$/.exec(t);
+  if (!m) return 'Type a port like 443, or tcp 2222→22 to forward to a different port';
+  const a = Number(m[2]), b = m[3] ? Number(m[3]) : undefined;
+  if (a < 1 || a > 65535 || (b !== undefined && (b < 1 || b > 65535))) return 'Ports go from 1 to 65535';
+  return { proto: (m[1] as 'tcp' | 'udp' | undefined) ?? 'tcp', publicPort: a, privatePort: b && b !== a ? b : undefined };
 }

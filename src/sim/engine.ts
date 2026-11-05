@@ -2,6 +2,8 @@
 //   topology (DHCP, OSPF) → events → incidents → flows → paths → congestion
 //   → usage → availability → economy → health → stats → achievements
 
+import { seedRng } from '../rng';
+import { random } from '../rng';
 import {
   DAY_TICKS, DDOS_FIRST_TICK, DDOS_FLOOD_S, DDOS_INTERVAL_FLOOR_S,
   DDOS_INTERVAL_MAX_S, DDOS_INTERVAL_MIN_S, DDOS_MITIGATED_FRACTION, DDOS_RECON_S, DDOS_REWARD_SECONDS,
@@ -9,12 +11,12 @@ import {
   REPUTATION_OUTAGE_HIT, ROUTER_CAPACITY_MBPS, SITE_MBPS, SITE_REVENUE, SWITCH_CAPACITY_MBPS, TICKS_PER_SEC,
   UPLINK_TIER, UPTIME_BUCKETS, DISK_TYPES, ENGINEER_SALARY, GPU_REVENUE, INTRUSION_CHECK_S, LATERAL_MBPS,
   ACCESS, AI_MBPS, CLOUD_BASE_MBPS, INTERNET_IP, DNS_MBPS, DNS_REVENUE, DOMAIN_RENEWAL, NAMED_DEMAND_BONUS, REGISTRAR_DNS_FEE, CLOUD_GROWTH_GB_PER_S, CLOUD_PAY_PER_GB, FRONTEND_LINK_MBPS, GPU_LINK_MBPS,
-  LATERAL_SECONDS, PATCH_FIRST_TICK, TRANSIT_DST, DEV_BUG_CHANCE, DEV_BUG_WINDOW_S, DEV_MAX_QUALITY, DEV_QUALITY_STEP, DEV_SECONDS_PER_RELEASE, PATCH_INTERVAL_S, ROLES, TRESPASS_FIRST_TICK, TRESPASS_INTERVAL_S, VULNERABLE_AFTER_S, PATCH_FETCH_MBPS, MIRROR_FETCH_S, MIRROR_FETCH_MBPS } from '../balance';
+  LATERAL_SECONDS, PATCH_FIRST_TICK, TRANSIT_DST, DEV_BUG_CHANCE, DEV_BUG_WINDOW_S, DEV_MAX_QUALITY, DEV_QUALITY_STEP, DEV_SECONDS_PER_RELEASE, PATCH_INTERVAL_S, ROLES, TRESPASS_FIRST_TICK, TRESPASS_INTERVAL_S, VULNERABLE_AFTER_S, PATCH_FETCH_MBPS, MIRROR_FETCH_S, MIRROR_FETCH_MBPS, DEMAND_SOFT_CAP } from '../balance';
 import { carryComps, diskPrice, freshComps, roleUse, serverCaps, serverPrice, serverUpkeep, specsFor, wipesArray } from '../state/hardware';
 import { compName, effTflops, failedComps, hwFastTick, serverDown, setHwHooks, syncHealth } from './hw';
 import { knownProblems, monitorFlows, noticeTick, setMonitorHooks } from './monitor';
 import { PLAYER_BLOCK_OCTETS } from '../balance';
-import { backendPort, roundTrip, tripOk } from './net';
+import { backendPort, flowShape, roundTrip, tripOk } from './net';
 import { cancelJob, compromise, createJob, deskReaches, setStaffHooks, spawnTrespasser, staffTick } from './staff';
 import { checkAchievements } from '../progress';
 import { parseIp } from '../state/ip';
@@ -35,8 +37,8 @@ export function notify(msg: string, level: Notice['level'] = 'info'): void {
   if (notices.length > 20) notices.shift();
 }
 
-const rand = (a: number, b: number) => a + Math.random() * (b - a);
-const pick = <T>(xs: readonly T[]): T => xs[Math.floor(Math.random() * xs.length)]!;
+const rand = (a: number, b: number) => a + random() * (b - a);
+const pick = <T>(xs: readonly T[]): T => xs[Math.floor(random() * xs.length)]!;
 
 // ─── Main tick ──────────────────────────────────────────────────────────────
 
@@ -127,13 +129,24 @@ export function visitorPort(state: WorldState, svc: Service): number {
   return 80;
 }
 
+/** Demand multipliers stack, but visitors are finite: growth slows down and levels off. */
+export function softCap(m: number): number {
+  return m <= 1 ? m : 1 + (m - 1) / (1 + (m - 1) / DEMAND_SOFT_CAP);
+}
+
+/** Sites answering under the same name share its visitors (and what they pay). */
+export function nameSharers(state: WorldState, svc: Service): number {
+  if (!svc.fqdn) return 1;
+  return Math.max(1, Object.values(state.services).filter((v) => v.fqdn === svc.fqdn && v.kind === svc.kind).length);
+}
+
 function syncServiceFlows(state: WorldState, cache: RuntimeCache): void {
   const curve = 1 + 0.2 * Math.sin((2 * Math.PI * state.time.tick) / DAY_TICKS);
   for (const svc of Object.values(state.services)) {
-    svc.demand = Math.max(0.7, Math.min(1.3, svc.demand + (Math.random() - 0.5) * 0.004));
+    svc.demand = Math.max(0.7, Math.min(1.3, svc.demand + (random() - 0.5) * 0.004));
     const base = svc.kind === 'ai' ? AI_MBPS : svc.kind === 'cloud' ? CLOUD_BASE_MBPS + svc.usedGB * 0.004 : svc.kind === 'dns' ? DNS_MBPS : SITE_MBPS;
     const named = !!svc.fqdn && !!cache.resolve[svc.id]?.ip;
-    const rate = base * svc.demand * curve * svc.reputation * (named ? NAMED_DEMAND_BONUS : 1) * (svc.quality ?? 1) * certMul(state, cache, svc);
+    const rate = (base * svc.demand * curve * softCap(svc.reputation * (named ? NAMED_DEMAND_BONUS : 1) * (svc.quality ?? 1) * certMul(state, cache, svc))) / nameSharers(state, svc);
     const dsts = endpointsOf(state, cache, svc);
     const proto = svc.kind === 'dns' ? 'udp' as const : 'tcp' as const;
     const port = visitorPort(state, svc);
@@ -243,8 +256,16 @@ function applyLoad(state: WorldState, cache: RuntimeCache): void {
   for (const f of Object.values(state.flows)) {
     const p = cache.paths[f.id];
     if (!p) continue;
-    for (const r of new Set(p.resources)) add(r, f.rateMbps);
-    for (const c of p.floodCables) add(`cab:${c}`, f.rateMbps);
+    // requests and replies both load what they cross; a box or cable both legs use
+    // carries the bigger of the two (links are full duplex)
+    const sh = flowShape(state, f);
+    const ret = p.ret && !p.blocked && !p.ret.blocked ? p.ret : null;
+    const fwd = new Set(p.resources);
+    // the device that opened the connection is not charged for its own replies (nor was it for sending)
+    const back = new Set((ret?.resources ?? []).filter((r) => r !== `dev:${f.origin}`));
+    for (const r of new Set([...fwd, ...back])) add(r, f.rateMbps * (fwd.has(r) && back.has(r) ? Math.max(sh.req, sh.resp) : fwd.has(r) ? (ret ? sh.req : 1) : sh.resp));
+    for (const c of p.floodCables) add(`cab:${c}`, f.rateMbps * (ret ? sh.req : 1));
+    for (const c of ret?.floodCables ?? []) add(`cab:${c}`, f.rateMbps * sh.resp);
   }
   const factor = new Map<string, number>();
   for (const [k, v] of load) factor.set(k, Math.min(1, capacityOf(state, k) / Math.max(v, 1e-9)));
@@ -263,6 +284,7 @@ function applyLoad(state: WorldState, cache: RuntimeCache): void {
     if (!p) continue;
     let fac = 1;
     for (const r of p.resources) fac = Math.min(fac, factor.get(r) ?? 1);
+    if (p.ret && !p.ret.blocked) for (const r of p.ret.resources) fac = Math.min(fac, factor.get(r) ?? 1);
     cache.delivery[f.id] = fac;
     for (const m of pathMatches(p)) {
       cache.ruleHits[m] = (cache.ruleHits[m] ?? 0) + f.rateMbps;
@@ -414,8 +436,8 @@ function syncTowerFlows(state: WorldState, cache: RuntimeCache): void {
     if (d.kind !== 'tower') continue;
     const sb = d.subs;
     const def = ACCESS[d.access];
-    sb.demand = Math.max(0.7, Math.min(1.3, sb.demand + (Math.random() - 0.5) * 0.004));
-    if (def.spikes && state.time.tick > sb.spikeUntil && Math.random() < 1 / (TICKS_PER_SEC * 300)) {
+    sb.demand = Math.max(0.7, Math.min(1.3, sb.demand + (random() - 0.5) * 0.004));
+    if (def.spikes && state.time.tick > sb.spikeUntil && random() < 1 / (TICKS_PER_SEC * 300)) {
       sb.spikeUntil = state.time.tick + 60 * TICKS_PER_SEC;
       const why = pick(['a concert nearby', 'a football match', 'a big software release', 'a breaking news story']);
       notify(`${d.name}: traffic spike from ${why}. Expect almost double the load for a minute.`, 'warn');
@@ -557,13 +579,13 @@ export function serviceRevenue(state: WorldState, svc: Service): number {
     const c = runtimeRef ? chain(state, runtimeRef, svc) : null;
     let rev = 0;
     for (const id of c?.gpus ?? []) { const g = state.devices[id]; if (g?.kind === 'server') rev += GPU_REVENUE(effTflops(g)); }
-    return rev * svc.demand * svc.reputation * svc.availability * (svc.quality ?? 1) * (runtimeRef ? certMul(state, runtimeRef, svc) : 1);
+    return rev * svc.demand * svc.availability * softCap(svc.reputation * (svc.quality ?? 1) * (runtimeRef ? certMul(state, runtimeRef, svc) : 1)) / nameSharers(state, svc);
   }
   const cert = runtimeRef ? certMul(state, runtimeRef, svc) : 1;
   const named = (svc.fqdn && runtimeRef?.resolve[svc.id]?.ip ? NAMED_DEMAND_BONUS : 1) * (svc.quality ?? 1) * cert;
   if (svc.kind === 'cloud') return svc.usedGB * CLOUD_PAY_PER_GB * svc.availability * (svc.quality ?? 1) * cert;
-  if (svc.kind === 'dns') return DNS_REVENUE * svc.demand * svc.reputation * svc.availability * named;
-  return SITE_REVENUE * svc.demand * svc.reputation * svc.availability * named;
+  if (svc.kind === 'dns') return (DNS_REVENUE * svc.demand * svc.availability * softCap(svc.reputation * named)) / nameSharers(state, svc);
+  return (SITE_REVENUE * svc.demand * svc.availability * softCap(svc.reputation * named)) / nameSharers(state, svc);
 }
 
 // ─── Events ─────────────────────────────────────────────────────────────────
@@ -1098,8 +1120,8 @@ function intrusionCheck(state: WorldState, cache: RuntimeCache): void {
     if (d.compromised || isOffline(d) || !isVulnerable(state, d)) continue;
     if (d.kind === 'server') {
       const exposed = Object.values(state.services).some((v) => v.serverId === d.id && v.availability > 0);
-      if (exposed && Math.random() < 0.3) compromise(state, cache, d, 'remote', 'exploited through an unpatched service');
-    } else if (d.kind === 'desk' && Math.random() < 0.2) {
+      if (exposed && random() < 0.3) compromise(state, cache, d, 'remote', 'exploited through an unpatched service');
+    } else if (d.kind === 'desk' && random() < 0.2) {
       compromise(state, cache, d, 'remote', 'phishing mail opened on an unpatched PC');
     }
   }
@@ -1157,9 +1179,9 @@ const subnetLocal = (ip: string, mask: string) => { const c = subnetOf(ip, mask)
 function randomRange24(): string {
   // public-looking /24 that is not RFC1918, not our documentation block, not multicast
   for (;;) {
-    const a = 11 + Math.floor(Math.random() * 212);
+    const a = 11 + Math.floor(random() * 212);
     if ([127, 169, 172, 192, 198, 203, 100, 10, ...PLAYER_BLOCK_OCTETS].includes(a)) continue;
-    return `${a}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}.0/24`;
+    return `${a}.${Math.floor(random() * 256)}.${Math.floor(random() * 256)}.0/24`;
   }
 }
 
@@ -1175,7 +1197,7 @@ function startDdos(state: WorldState): boolean {
   let type: AttackType = 'http_flood';
   let ranges = 1;
   if (n === 1) ranges = 2;
-  if (n >= 2) { type = pick(['http_flood', 'syn_flood', 'udp_amp'] as const); ranges = 2 + Math.floor(Math.random() * 3); }
+  if (n >= 2) { type = pick(['http_flood', 'syn_flood', 'udp_amp'] as const); ranges = 2 + Math.floor(random() * 3); }
   const up = Object.values(state.devices).find((d) => d.kind === 'uplink');
   const bw = up?.kind === 'uplink' ? up.bandwidthMbps : 100;
   const cap = 600 * (1 + Math.max(0, n - 1) * 0.6);
@@ -1222,8 +1244,8 @@ function updateIncidents(state: WorldState, cache: RuntimeCache): void {
         const f: Flow = {
           id, kind: 'attack', origin: 'external', srcCidr: src, dstIp: inc.targetIp,
           protocol: inc.attackType === 'udp_amp' ? 'udp' : 'tcp',
-          srcPort: inc.attackType === 'udp_amp' ? pick([53, 123, 1900]) : 40000 + Math.floor(Math.random() * 20000),
-          dstPort: inc.attackType === 'udp_amp' ? 1024 + Math.floor(Math.random() * 60000) : 80,
+          srcPort: inc.attackType === 'udp_amp' ? pick([53, 123, 1900]) : 40000 + Math.floor(random() * 20000),
+          dstPort: inc.attackType === 'udp_amp' ? 1024 + Math.floor(random() * 60000) : 80,
           syn: inc.attackType === 'syn_flood', rateMbps: per, serviceId: null, incidentId: inc.id,
         };
         state.flows[id] = f;
@@ -1335,6 +1357,7 @@ export function addLog(state: WorldState, deviceId: DeviceId, msg: string, level
 // ─── Init ───────────────────────────────────────────────────────────────────
 
 export function initSimulation(state: WorldState, cache: RuntimeCache): void {
+  seedRng(state.meta.rng ?? state.meta.seed);
   runtimeRef = cache;
   setStaffHooks({ notify, log: addLog, finishJob, fetchReady });
   setClimateHooks({ notify, log: addLog });
@@ -1388,7 +1411,7 @@ function devWork(state: WorldState, cache: RuntimeCache): void {
     v.quality = Math.min(DEV_MAX_QUALITY, (v.quality ?? 1) + DEV_QUALITY_STEP);
     const srv = state.devices[v.serverId];
     const label = `${srv?.name ?? '?'} ${v.kind}${v.fqdn ? ` (${v.fqdn})` : ''}`;
-    if (Math.random() < DEV_BUG_CHANCE && srv?.sw) {
+    if (random() < DEV_BUG_CHANCE && srv?.sw) {
       // a bad rollout: the server is exploitable soon unless someone patches it
       srv.sw.patch = Math.min(srv.sw.patch, state.staff.release - 1);
       srv.sw.outdatedSince = state.time.tick - (VULNERABLE_AFTER_S - DEV_BUG_WINDOW_S) * TICKS_PER_SEC;

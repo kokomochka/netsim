@@ -7,6 +7,7 @@ import { assertNever, type Cable, type Device, type Flow, type FlowKind, type Re
 import { pointer, runtime, ui, world, deviceAtCell } from '../state/world';
 import { doorStates, smartDoorsLocked } from '../sim/staff';
 import { inParking, isIndoor, isPath, placementError, tileAt } from '../state/floor';
+import { flowShape } from '../sim/net';
 import { clearIconCache, deviceContext } from './icons';
 import { CABLE_COLOR, COLORS, KIND_COLOR } from './palette';
 
@@ -717,8 +718,10 @@ export class Renderer {
       const p = runtime.paths[f.id];
       if (!p || p.hops.length < 2) continue;
       const mbps = Math.max(0.1, f.rateMbps);
-      add(p, f, mbps);
-      if (!p.blocked && p.ret && !p.ret.blocked) add(p.ret, f, mbps * 0.5);
+      const sh = flowShape(s, f);
+      const both = !p.blocked && p.ret && !p.ret.blocked;
+      add(p, f, both ? mbps * sh.req : mbps);
+      if (both) add(p.ret!, f, mbps * sh.resp);
     }
     this.streams = [];
     // two directions on one cable run side by side

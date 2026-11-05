@@ -13,7 +13,7 @@
 //   • The reply path is resolved too, so a missing gateway, a missing return
 //     route or an un-NATed private source breaks the service.
 
-import { MGMT_PORT, MON_AGENT_PORT, ROLES, SNMP_PORT } from '../balance';
+import { MGMT_PORT, MON_AGENT_PORT, ROLES, SNMP_PORT, FLOW_SHAPE } from '../balance';
 import { formatCidr, formatIp, inCidr, isAny, parseCidr, parseIp, parsePortRange, prefixToMask, subnetOf, type Cidr } from '../state/ip';
 import type {
   BlockReason, Cable, CableId, DdosScrubberDevice, Device, DeviceId, FirewallDevice, FirewallInterface,
@@ -365,8 +365,10 @@ function aclEval(fw: FirewallDevice, inIf: FirewallInterface, outIf: FirewallInt
 }
 
 function natFor(d: L3Device, pred: (n: NatEntry) => boolean): NatEntry | undefined {
-  return d.nat.find(pred);
+  // port forwards are more specific than whole-address entries
+  return d.nat.find((n) => n.publicPort && pred(n)) ?? d.nat.find((n) => !n.publicPort && pred(n));
 }
+const portOk = (n: NatEntry, proto: string, port: number) => !n.publicPort || ((n.proto ?? 'tcp') === proto && n.publicPort === port);
 
 // ─── Walk ───────────────────────────────────────────────────────────────────
 
@@ -466,6 +468,7 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
           h.note = `drops the reply: source ${ipStr(pkt.src)} is not one of your public addresses`;
           return b.block('bogon_src', `The reply reached the ISP with source ${ipStr(pkt.src)}. The internet cannot answer a private address. Add a static NAT entry on your edge device, or give the server a public IP.`);
         }
+        b.p.resources.push(`dev:${d.id}`);
         h.note = 'sends the reply out to the visitor';
         return b.ok('Reply reaches the internet.');
       }
@@ -479,16 +482,20 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
         let srcNatted = false;
         // static NAT
         if (pkt.dir === 'fwd') {
-          const n = natFor(d, (x) => parseIp(x.publicIp) === pkt.dst);
+          const n = natFor(d, (x) => parseIp(x.publicIp) === pkt.dst && portOk(x, pkt.proto, pkt.dport));
           const priv = n ? parseIp(n.privateIp) : null;
-          if (n && priv !== null) { notes.push(`NAT ${n.publicIp} → ${n.privateIp}`); pkt = { ...pkt, dst: priv }; }
-          const sn = natFor(d, (x) => parseIp(x.privateIp) === pkt.src);
+          if (n && priv !== null) {
+            const to = n.publicPort ? n.privatePort ?? n.publicPort : pkt.dport;
+            notes.push(n.publicPort ? `port forward ${n.publicIp}:${n.publicPort} → ${n.privateIp}:${to}` : `NAT ${n.publicIp} → ${n.privateIp}`);
+            pkt = { ...pkt, dst: priv, dport: to };
+          }
+          const sn = natFor(d, (x) => !x.publicPort && parseIp(x.privateIp) === pkt.src);
           const spub = sn ? parseIp(sn.publicIp) : null;
           if (sn && spub !== null) { notes.push(`NAT source ${sn.privateIp} → ${sn.publicIp}`); pkt = { ...pkt, src: spub }; srcNatted = true; }
         } else {
-          const n = natFor(d, (x) => parseIp(x.privateIp) === pkt.src);
+          const n = natFor(d, (x) => parseIp(x.privateIp) === pkt.src && (!x.publicPort || ((x.proto ?? 'tcp') === pkt.proto && (x.privatePort ?? x.publicPort) === pkt.sport)));
           const pub = n ? parseIp(n.publicIp) : null;
-          if (n && pub !== null) { notes.push(`NAT source ${n.privateIp} → ${n.publicIp}`); pkt = { ...pkt, src: pub }; }
+          if (n && pub !== null) { notes.push(`NAT source ${n.privateIp} → ${n.publicIp}`); pkt = { ...pkt, src: pub, sport: n.publicPort ?? pkt.sport }; }
         }
         // is it for this box?
         if (l3Ifaces(ctx, d).some((i) => i.ip === pkt.dst)) {
@@ -653,7 +660,7 @@ function retrace(p: ResolvedPath): ResolvedPath {
     const h = p.hops[n - 1 - j]!;
     return { deviceId: h.deviceId, inPort: h.outPort, outPort: h.inPort, cableId: p.hops[n - 2 - j]?.cableId ?? null, note: j === 0 ? 'the internet answers' : 'passes the reply back (connection state)' };
   });
-  return { ...p, hops, ret: null, floodCables: [], resources: [], reachedServer: p.hops[0]?.deviceId ?? null, explain: 'The reply comes back the same way.' };
+  return { ...p, hops, ret: null, floodCables: [...p.floodCables], resources: [...p.resources], reachedServer: p.hops[0]?.deviceId ?? null, explain: 'The reply comes back the same way.' };
 }
 
 /** Request and reply. The answer must make it back through real routes and firewalls,
@@ -675,6 +682,18 @@ export function roundTrip(ctx: NetCtx, from: Device, dst: number, proto: Pkt['pr
 /** A connection works only if the reply made it back too. */
 export function tripOk(p: ResolvedPath | undefined, to?: DeviceId): boolean {
   return !!p && !p.blocked && !!p.reachedServer && (to === undefined || p.reachedServer === to) && !(p.ret && p.ret.blocked);
+}
+
+/** How a flow splits between request and reply. */
+export function flowShape(s: WorldState, f: Flow): { req: number; resp: number } {
+  switch (f.kind) {
+    case 'http': return s.services[f.serviceId ?? '']?.kind === 'cloud' ? FLOW_SHAPE.upload : FLOW_SHAPE.page;
+    case 'proxied': return s.services[f.serviceId ?? '']?.kind === 'cloud' ? FLOW_SHAPE.upload : FLOW_SHAPE.page;
+    case 'transit': return FLOW_SHAPE.page;
+    case 'backup': return FLOW_SHAPE.upload;
+    case 'control': return /^(fetch|mirror|fwdproxy):/.test(f.tag ?? '') ? FLOW_SHAPE.download : FLOW_SHAPE.even;
+    default: return FLOW_SHAPE.even;
+  }
 }
 
 /** Roles that speak HTTP: tcp/80, or tcp/443 with a certificate. */
