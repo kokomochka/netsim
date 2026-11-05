@@ -32,45 +32,31 @@ export function buildingAt(buildings: Record<string, Building>, x: number, gy: n
   return Object.values(buildings).find((b) => lvl < b.floors && inRects(b.rects, x, y));
 }
 
-/** A footprint that is not a plain box: notches, wings and steps, front kept straight. */
+/**
+ * An ordinary footprint: mostly plain boxes, sometimes a small notch at a back
+ * corner (a yard or a light well) or a slightly narrower back half. The street
+ * front always stays one straight wall.
+ */
 function footprint(r: () => number, x0: number, x1: number, y0: number, y1: number, front: 'n' | 's'): Rect[] {
   const w = x1 - x0 + 1, h = y1 - y0 + 1;
   const base: Rect = { x0, y0, x1, y1 };
-  const pick = Math.floor(r() * 5);
-  const backY = front === 's' ? y0 : y1;          // the side away from the street
-  const nw = Math.max(3, Math.floor(w * (0.3 + r() * 0.2))), nh = Math.max(3, Math.floor(h * (0.3 + r() * 0.25)));
-  const cut = (left: boolean): Rect => ({
-    x0: left ? x0 : x1 - nw + 1, x1: left ? x0 + nw - 1 : x1,
-    y0: front === 's' ? y0 : y1 - nh + 1, y1: front === 's' ? y0 + nh - 1 : y1,
-  });
-  const minus = (a: Rect, c: Rect): Rect[] => {
-    // split a minus a corner c into two rects
-    const out: Rect[] = [];
-    if (c.x0 > a.x0) out.push({ x0: a.x0, y0: a.y0, x1: c.x0 - 1, y1: a.y1 });
-    if (c.x1 < a.x1) out.push({ x0: c.x1 + 1, y0: a.y0, x1: a.x1, y1: a.y1 });
-    const midX0 = Math.max(a.x0, c.x0), midX1 = Math.min(a.x1, c.x1);
-    if (c.y0 > a.y0) out.push({ x0: midX0, y0: a.y0, x1: midX1, y1: c.y0 - 1 });
-    if (c.y1 < a.y1) out.push({ x0: midX0, y0: c.y1 + 1, x1: midX1, y1: a.y1 });
-    return out;
-  };
-  if (w < 9 || h < 8 || pick === 0) return [base];
-  if (pick === 1) return minus(base, cut(r() < 0.5));                       // L
-  if (pick === 2) {                                                          // T: both back corners cut
-    const a = minus(base, cut(true));
-    const c2 = cut(false);
-    return a.flatMap((x) => (x.x1 >= c2.x0 && (front === 's' ? x.y0 <= c2.y1 : x.y1 >= c2.y0) ? minus(x, { x0: Math.max(x.x0, c2.x0), x1: Math.min(x.x1, c2.x1), y0: Math.max(x.y0, c2.y0), y1: Math.min(x.y1, c2.y1) }) : [x]));
+  const roll = r();
+  if (w < 9 || h < 9 || roll < 0.6) return [base];
+  const back = front === 's' ? 'top' : 'bottom';
+  if (roll < 0.85) {
+    // a back corner notch, a quarter of the width, a third of the depth
+    const nw = Math.max(3, Math.round(w * 0.28)), nh = Math.max(3, Math.round(h * 0.33));
+    const left = r() < 0.5;
+    const nx0 = left ? x0 : x1 - nw + 1, nx1 = left ? x0 + nw - 1 : x1;
+    const main: Rect = left ? { x0: nx1 + 1, y0, x1, y1 } : { x0, y0, x1: nx0 - 1, y1 };
+    const rest: Rect = back === 'top' ? { x0: nx0, x1: nx1, y0: y0 + nh, y1 } : { x0: nx0, x1: nx1, y0, y1: y1 - nh };
+    return [main, rest];
   }
-  if (pick === 3) {                                                          // stepped: narrower back half
-    const inset = Math.max(1, Math.floor(w * 0.18));
-    const half = Math.floor(h / 2);
-    return front === 's'
-      ? [{ x0: x0 + inset, y0, x1: x1 - inset, y1: y0 + half - 1 }, { x0, y0: y0 + half, x1, y1 }]
-      : [{ x0, y0, x1, y1: y0 + half }, { x0: x0 + inset, y0: y0 + half + 1, x1: x1 - inset, y1 }];
-  }
-  // U: a courtyard bitten out of the back
-  const cx0 = x0 + Math.floor(w / 3), cx1 = x1 - Math.floor(w / 3);
-  void backY;
-  return minus(base, { x0: cx0, x1: cx1, y0: front === 's' ? y0 : y1 - nh + 1, y1: front === 's' ? y0 + nh - 1 : y1 });
+  // a back half set in by one cell on each side
+  const half = Math.floor(h / 2);
+  return back === 'top'
+    ? [{ x0: x0 + 1, y0, x1: x1 - 1, y1: y0 + half - 1 }, { x0, y0: y0 + half, x1, y1 }]
+    : [{ x0, y0, x1, y1: y0 + half }, { x0: x0 + 1, y0: y0 + half + 1, x1: x1 - 1, y1 }];
 }
 
 interface Lot { x0: number; x1: number; y0: number; y1: number; front: 'n' | 's' }

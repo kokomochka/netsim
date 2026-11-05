@@ -5,7 +5,7 @@ import { redo, undo } from './state/undo';
 import { CITY_H, CITY_W, STRIDE, levelOf } from './state/city';
 import { BODY, CELL, ZOOM_MAX, ZOOM_MIN } from './balance';
 import { distToPolyline, nearestFreePort, portAtPoint, portPos, freePorts } from './state/geometry';
-import type { Camera, Vec2 } from './state/types';
+import type { Building, Camera, Vec2 } from './state/types';
 import {
   connect, deleteCable, deleteDevice, deviceAtCell, moveDevice, paintTile, placeDevice, pointer, rotateDevice,
   select, setTool, toast, ui, world,
@@ -87,7 +87,7 @@ export function attachInput(r: Renderer, isUiBusy: () => boolean): void {
   const pointers = new Map<number, Vec2>();
   const devAt = (sp: Vec2, cell: { gx: number; gy: number }) => {
     const id = r.pickDevice(sp.x, sp.y);
-    return (id ? world.get().devices[id] : undefined) ?? deviceAtCell(world.get(), cell.gx, cell.gy);
+    return (id ? world.get().devices[id] : undefined) ?? (r.cellVisible(cell.gx, cell.gy) ? deviceAtCell(world.get(), cell.gx, cell.gy) : undefined);
   };
   let gesture: Gesture = { kind: 'none' };
 
@@ -118,6 +118,11 @@ export function attachInput(r: Renderer, isUiBusy: () => boolean): void {
     const wpt = r.screenToWorld(sp.x, sp.y);
     const cell = cellOf(wpt);
     const dev = u.tool.mode === 'place' ? deviceAtCell(s, cell.gx, cell.gy) : devAt(sp, cell);
+    // a closed building (roof on): tapping it opens it, whatever the tool
+    if (!dev && u.tool.mode !== 'build') {
+      const b = r.pickBuilding(sp.x, sp.y);
+      if (b) { openBuilding(b, 0); return; }
+    }
     switch (u.tool.mode) {
       case 'place': {
         placeDevice(u.tool.kind, cell, u.tool.access, !!u.tool.stack);
@@ -360,4 +365,21 @@ export function doUndo(again: boolean): void {
   if (sel && (sel.type === 'device' ? !world.get().devices[sel.id] : !world.get().cables[sel.id])) ui.update((x) => { x.selection = null; }, 'ui');
   const m = Math.round(r.money);
   toast(`${again ? 'Redone' : 'Undone'}${m > 0 ? ` · $${m} back` : m < 0 ? ` · $${-m} spent again` : ''}.`);
+}
+
+/** Open a building on one of its storeys and centre the camera on it. */
+export function openBuilding(b: Building, level: number): void {
+  const cv = document.querySelector('#stage canvas') as HTMLCanvasElement | null;
+  const w = cv?.clientWidth ?? 1000, h = cv?.clientHeight ?? 700;
+  const xs = b.rects.flatMap((q) => [q.x0, q.x1 + 1]), ys = b.rects.flatMap((q) => [q.y0, q.y1 + 1]);
+  const cx = ((Math.min(...xs) + Math.max(...xs)) / 2) * CELL, cy = ((Math.min(...ys) + Math.max(...ys)) / 2 + level * STRIDE) * CELL;
+  const scale = world.get().camera.scale;
+  // the renderer moves the camera between bands itself; set the storey first, then aim
+  ui.update((u) => { u.focus = b.id; u.level = level; if (!b.owned && u.tool.mode === 'place') u.tool = { mode: 'select' }; }, 'ui');
+  world.update((wd) => { wd.camera = { scale, x: w / 2 - cx * scale, y: h / 2 - cy * scale }; }, 'camera');
+}
+
+/** Every roof back on: the whole city at street level. */
+export function showCity(): void {
+  ui.update((u) => { u.focus = ''; u.level = 0; u.selection = null; u.pendingCable = null; }, 'ui');
 }

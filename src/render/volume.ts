@@ -4,7 +4,7 @@
 
 import { Container, Graphics } from 'pixi.js';
 import { BODY, CELL } from '../balance';
-import { CITY_H, CITY_W, STREET_Y, STRIDE, inRects } from '../state/city';
+import { CITY_H, CITY_W, STREET_Y, STRIDE, buildingAt, inRects } from '../state/city';
 import type { Building, Device, DeviceKind, Floor, Vec2, WorldState } from '../state/types';
 import { deviceContext } from './icons';
 import { COLORS, KIND_COLOR } from './palette';
@@ -34,6 +34,108 @@ export function block(g: Graphics, x0: number, y0: number, x1: number, y1: numbe
   g.rect(x0, y1 - H, x1 - x0, H).fill({ color: front });
   g.rect(x0, y0 - H, x1 - x0, y1 - y0).fill({ color: top });
   return { x: x0, y: y0 - H, w: x1 - x0, h: y1 - y0 + H };
+}
+
+// ── buildings ─────────────────────────────────────────────────────────────
+const FACADE = [0xc9b9a0, 0xb7a58f, 0xd4c8b2, 0xa9a39a, 0xc2b6a6, 0xb59c84, 0xd1c4ae, 0x9fa6ab];
+const FLAT_ROOF = [0x8a8d91, 0x7d8085, 0x93918a, 0x6f7479];
+const TILE_ROOF = [0x9c5b45, 0x8a4f3c, 0x6d6f73, 0x7a5848, 0xa8674c];
+export const STOREY_H = 18;
+
+/**
+ * A whole building seen from above, every storey from `level` up stacked:
+ * a facade with a row of windows per floor, then a roof. Small low houses get a
+ * pitched tiled roof; the rest a flat roof with a parapet, a stair hut and plant.
+ * Returns the y the block stands on, for depth sorting.
+ */
+export function drawBuilding(g: Graphics, b: Building, level: number, dy: number, mark?: number): number {
+  const h = h32(b.id);
+  const floors = b.floors - level;
+  const H = 6 + floors * STOREY_H;
+  const facade = FACADE[h % FACADE.length]!;
+  const xs = b.rects.flatMap((q) => [q.x0, q.x1]), ys = b.rects.flatMap((q) => [q.y0, q.y1]);
+  const bw = Math.max(...xs) - Math.min(...xs) + 1, bd = Math.max(...ys) - Math.min(...ys) + 1;
+  const pitched = b.floors <= 2 && b.rects.length === 1 && Math.min(bw, bd) <= 12;
+  const rects = [...b.rects].sort((a, c) => a.y1 - c.y1);
+  let maxY = 0;
+  // shadows first, so one wing never darkens the other
+  for (const q of rects) g.rect(q.x0 * CELL + 6, (q.y0 + dy) * CELL + 4, (q.x1 - q.x0 + 1) * CELL, (q.y1 - q.y0 + 1) * CELL).fill({ color: 0x000000, alpha: 0.2 });
+  for (const q of rects) {
+    const x0 = q.x0 * CELL, x1 = (q.x1 + 1) * CELL, y1 = (q.y1 + 1 + dy) * CELL;
+    // the south face: a band per storey, a ledge between floors, windows
+    g.rect(x0, y1 - H, x1 - x0, H).fill({ color: shade(facade, -0.18) });
+    for (let fl = 0; fl < floors; fl++) {
+      const fy = y1 - (fl + 1) * STOREY_H;
+      g.rect(x0, fy, x1 - x0, 2).fill({ color: shade(facade, -0.34) });
+      for (let wx = x0 + 8; wx + 12 <= x1 - 6; wx += 20) {
+        const lit = (h32(`${b.id}${fl}${wx}`) & 7) === 0;
+        g.rect(wx, fy + 5, 12, 9).fill({ color: lit ? 0xf3e2a6 : 0x9fb6c6 });
+        g.rect(wx, fy + 5, 12, 2).fill({ color: 0xffffff, alpha: 0.35 });
+      }
+    }
+    // the front door, on the street side
+    if (level === 0 && b.front === 's' && q.y1 === Math.max(...ys) && b.door.gx >= q.x0 && b.door.gx <= q.x1) {
+      const dx = b.door.gx * CELL + CELL / 2;
+      g.rect(dx - 9, y1 - 16, 18, 16).fill({ color: 0x4a3a2c });
+      g.rect(dx - 12, y1 - 19, 24, 3).fill({ color: shade(facade, -0.45) });
+    }
+    maxY = Math.max(maxY, y1);
+  }
+  // roofs, lifted by the building's height
+  for (const q of rects) {
+    const x0 = q.x0 * CELL, y0 = (q.y0 + dy) * CELL - H, x1 = (q.x1 + 1) * CELL, y1 = (q.y1 + 1 + dy) * CELL - H;
+    if (pitched) {
+      const tile = TILE_ROOF[(h >>> 5) % TILE_ROOF.length]!;
+      if (x1 - x0 >= y1 - y0) {
+        // ridge east–west: the south slope faces you, the north one is foreshortened
+        const ridge = y0 + (y1 - y0) * 0.42;
+        g.rect(x0 - 3, y0 - 2, x1 - x0 + 6, ridge - y0 + 2).fill({ color: shade(tile, -0.22) });
+        g.rect(x0 - 3, ridge, x1 - x0 + 6, y1 - ridge + 3).fill({ color: tile });
+        for (let ty = ridge + 6; ty < y1; ty += 6) g.rect(x0 - 3, ty, x1 - x0 + 6, 1).fill({ color: shade(tile, -0.12), alpha: 0.6 });
+        g.rect(x0 - 3, ridge - 1.5, x1 - x0 + 6, 3).fill({ color: shade(tile, -0.35) });
+      } else {
+        // ridge north–south: a lit west slope and a shaded east one
+        const mid = (x0 + x1) / 2;
+        g.rect(x0 - 3, y0 - 2, mid - x0 + 3, y1 - y0 + 5).fill({ color: tile });
+        g.rect(mid, y0 - 2, x1 - mid + 3, y1 - y0 + 5).fill({ color: shade(tile, -0.22) });
+        for (let tx = x0 + 3; tx < mid; tx += 6) g.rect(tx, y0 - 2, 1, y1 - y0 + 5).fill({ color: shade(tile, -0.12), alpha: 0.6 });
+        g.rect(mid - 1.5, y0 - 2, 3, y1 - y0 + 5).fill({ color: shade(tile, -0.35) });
+      }
+    } else {
+      const roof = FLAT_ROOF[(h >>> 7) % FLAT_ROOF.length]!;
+      // parapet, then gravel with a little texture
+      g.rect(x0, y0, x1 - x0, y1 - y0).fill({ color: shade(facade, -0.05) });
+      g.rect(x0 + 7, y0 + 7, x1 - x0 - 14, y1 - y0 - 14).fill({ color: roof });
+      g.rect(x0 + 7, y0 + 7, x1 - x0 - 14, 3).fill({ color: shade(roof, -0.25) });
+      for (let k = 0; k < ((x1 - x0) * (y1 - y0)) / 900; k++) {
+        const hh = h32(`${b.id}g${k}`);
+        g.rect(x0 + 10 + (hh % Math.max(1, x1 - x0 - 22)), y0 + 12 + ((hh >>> 12) % Math.max(1, y1 - y0 - 24)), 2, 2).fill({ color: shade(roof, (hh & 1) ? 0.12 : -0.12) });
+      }
+    }
+  }
+  if (!pitched) {
+    // a stair hut over the lift, and an AC unit on some roofs
+    const lx = b.lift.gx * CELL, ly = (b.lift.gy + dy) * CELL - H;
+    block(g, lx + 4, ly + 6, lx + CELL - 4, ly + CELL + 2, 10, shade(facade, -0.08), shade(facade, -0.3), false);
+    const q = rects[rects.length - 1]!;
+    if ((h & 1) === 0 && q.x1 - q.x0 >= 5) {
+      const ax = (q.x1 - 1) * CELL - 8, ay = (q.y0 + dy + 2) * CELL - H;
+      block(g, ax, ay, ax + 26, ay + 18, 8, 0xc9ccd0, 0x8d9298, false);
+      g.circle(ax + 13, ay + 1, 6).stroke({ width: 1.5, color: 0x6f757c });
+    }
+  }
+  if (mark !== undefined) {
+    for (const q of rects) g.rect(q.x0 * CELL, (q.y0 + dy) * CELL - H, (q.x1 - q.x0 + 1) * CELL, (q.y1 - q.y0 + 1) * CELL + H).stroke({ width: 5, color: mark, alpha: 0.9 });
+  }
+  if (b.owned) {
+    // yours fly a blue flag
+    const q = rects[0]!;
+    const fx = q.x0 * CELL + 14, fy = (q.y0 + dy) * CELL - H + 18;
+    g.ellipse(fx + 1, fy, 6, 3).fill({ color: 0x000000, alpha: 0.25 });
+    g.rect(fx, fy - 44, 3, 44).fill({ color: 0x5b6168 });
+    g.poly([fx + 3, fy - 44, fx + 36, fy - 36, fx + 3, fy - 27]).fill({ color: 0x2f6db5 });
+  }
+  return maxY;
 }
 
 // ── people ────────────────────────────────────────────────────────────────
@@ -111,6 +213,14 @@ export class VolumeScene {
   private walkerG = new Map<string, Graphics>();
   private lastT = 0;
   level = 0;
+  /** The building opened up for you to see inside; '' shows the whole city with roofs on. */
+  focus = '';
+
+  /** Is this cell's inside on show? Cells outside buildings always are. */
+  cellVisible(s: WorldState, gx: number, gy: number): boolean {
+    const b = buildingAt(s.buildings, gx, gy);
+    return !b || (b.owned && b.id === this.focus);
+  }
 
   constructor() {
     this.traffic.zIndex = (STREET_Y + 3) * CELL;
@@ -130,27 +240,23 @@ export class VolumeScene {
     const dy = L * STRIDE;
     const f = s.floor;
     const add = (g: Graphics, z: number) => { g.zIndex = z; this.stand.addChild(g); this.statics.push(g); };
-    const shown = (b: Building) => b.owned && b.floors > L;
+    const shown = (b: Building) => b.owned && b.floors > L && b.id === this.focus;
     // other buildings: solid blocks, as tall as they are; windows on the street face
     for (const b of Object.values(s.buildings)) {
       if (shown(b)) continue;
       if (L > 0 && b.floors <= L) continue;      // lower buildings stay below you, in the dimmed ground
-      const roof = [0x8a8d91, 0x9c6b52, 0x6f7f8c, 0xa39a87, 0x7d8a76, 0x8f7e6a][h32(b.id) % 6]!;
-      const H = 10 + (b.floors - L) * 9;
       const g = new Graphics();
-      let maxY = 0;
-      for (const q of [...b.rects].sort((a, c) => a.y1 - c.y1)) {
-        const x0 = q.x0 * CELL, y0 = (q.y0 + dy) * CELL, x1 = (q.x1 + 1) * CELL, y1 = (q.y1 + 1 + dy) * CELL;
-        block(g, x0, y0, x1, y1, H, roof, shade(roof, -0.32));
-        for (let fl = 0; fl < b.floors - L; fl++) {
-          const wy = y1 - 6 - fl * 9 - 4;
-          for (let wx = x0 + 6; wx < x1 - 10; wx += 14) g.rect(wx, wy, 8, 4).fill({ color: 0xbfd6e6, alpha: 0.75 });
-        }
-        g.rect(x0 + 4, y0 - H + 4, x1 - x0 - 8, y1 - y0 - 8).stroke({ width: 1.5, color: shade(roof, -0.12), alpha: 0.6 });
-        maxY = Math.max(maxY, y1);
+      const maxY = drawBuilding(g, b, L, dy, b.id === this.focus ? 0xf2c230 : b.owned ? 0x2f6db5 : undefined);
+      // Sims-style: a building standing in front of the one you opened goes see-through
+      const open = s.buildings[this.focus];
+      if (open?.owned) {
+        const H = 6 + (b.floors - L) * STOREY_H;
+        const covers = b.rects.some((q) => open.rects.some((o) => q.x0 <= o.x1 && q.x1 >= o.x0 && (q.y1 + 1) * CELL > o.y0 * CELL && (q.y0 * CELL - H) < (o.y1 + 1) * CELL && q.y1 > o.y1));
+        if (covers) g.alpha = 0.3;
       }
-      if (L === 0 && b.forSale) {
-        const p = { x: ((b.rects[0]!.x0 + b.rects[0]!.x1 + 1) / 2) * CELL, y: (b.rects[0]!.y0 + dy) * CELL - H + 18 };
+      if (L === 0 && b.forSale && !b.owned) {
+        const fr = b.rects.reduce((a, q) => ((b.front === 's' ? q.y1 > a.y1 : q.y0 < a.y0) ? q : a), b.rects[0]!);
+        const p = { x: ((fr.x0 + fr.x1 + 1) / 2) * CELL + 40, y: ((b.front === 's' ? fr.y1 + 1 : fr.y0) + dy) * CELL - 12 };
         g.roundRect(p.x - 22, p.y - 9, 44, 18, 4).fill({ color: 0xffffff }).stroke({ width: 1.5, color: 0xc0392b });
         g.rect(p.x - 14, p.y - 2, 28, 4).fill({ color: 0xc0392b });
       }
@@ -201,7 +307,7 @@ export class VolumeScene {
     const seen = new Set<string>();
     const dy0 = this.level * STRIDE, dy1 = dy0 + STRIDE;
     for (const d of Object.values(s.devices)) {
-      if (d.kind === 'badge' || d.gridPos.gy < dy0 || d.gridPos.gy >= dy1) continue;
+      if (d.kind === 'badge' || d.gridPos.gy < dy0 || d.gridPos.gy >= dy1 || !this.cellVisible(s, d.gridPos.gx, d.gridPos.gy)) continue;
       seen.add(d.id);
       let v = this.boxes.get(d.id);
       if (v && v.kind !== d.kind) { this.drop(d.id); v = undefined; }
@@ -323,7 +429,7 @@ export class VolumeScene {
     const seen = new Set<string>();
     const dy0 = this.level * STRIDE, dy1 = dy0 + STRIDE;
     const draw = (id: string, wx: number, wy: number, look: Look, walking: boolean, seated: boolean, faceX?: number) => {
-      if (wy < dy0 * CELL || wy >= dy1 * CELL) return;
+      if (wy < dy0 * CELL || wy >= dy1 * CELL || !this.cellVisible(s, Math.floor(wx / CELL), Math.floor(wy / CELL - 0.3))) return;
       seen.add(id);
       let g = this.people.get(id);
       if (!g) { g = new Graphics(); this.stand.addChild(g); this.people.set(id, g); }
@@ -346,6 +452,21 @@ export class VolumeScene {
     }
     for (const t of Object.values(s.staff.trespassers)) draw(t.id, t.x * CELL, t.y * CELL, lookOf(t.id, true), t.state !== 'hacking', false);
     for (const [id, g] of this.people) if (!seen.has(id)) { g.destroy(); this.people.delete(id); this.facing.delete(id); }
+  }
+
+  /** The closed building drawn under a world point (its roof or its facade), front-most first. */
+  pickBuilding(s: WorldState, x: number, y: number): Building | null {
+    const L = this.level, dy = L * STRIDE;
+    let best: Building | null = null, by = -Infinity;
+    for (const b of Object.values(s.buildings)) {
+      if (b.floors <= L || (b.owned && b.id === this.focus)) continue;
+      const H = 6 + (b.floors - L) * STOREY_H;
+      for (const q of b.rects) {
+        const x0 = q.x0 * CELL, x1 = (q.x1 + 1) * CELL, y0 = (q.y0 + dy) * CELL - H, y1 = (q.y1 + 1 + dy) * CELL;
+        if (x >= x0 && x <= x1 && y >= y0 && y <= y1 && y1 > by) { best = b; by = y1; }
+      }
+    }
+    return best;
   }
 
   /** Front-most box under a world point. */

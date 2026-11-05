@@ -30,6 +30,7 @@ export type Selection = { type: 'device'; id: DeviceId } | { type: 'cable'; id: 
 export interface UiState {
   view?: 'top' | 'iso';
   level?: number;              // the storey on show (0 = street level)
+  focus?: string;              // the building opened up; '' = the city with every roof on; unset = your first building
   tool: Tool;
   cableType: CableType;
   selection: Selection;
@@ -980,6 +981,13 @@ export function setTool(tool: Tool): void {
     u.pendingCable = null;
     if (tool.mode !== 'select') u.selection = null;
   }, 'ui');
+}
+
+/** The building whose inside is on show, or '' for the whole city. */
+export function focusOf(s: WorldState, u: UiState): string {
+  if (u.focus === '') return '';
+  if (u.focus && s.buildings[u.focus]) return u.focus;
+  return Object.values(s.buildings).find((b) => b.owned)?.id ?? '';
 }
 
 export function select(sel: Selection): void {

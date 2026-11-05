@@ -3,8 +3,8 @@
 import { Application, Container, Graphics, Text } from 'pixi.js';
 import { BODY, CELL, HP_CRITICAL, HP_WARNING } from '../balance';
 import { portPos, portUsage } from '../state/geometry';
-import { assertNever, type Cable, type Device, type Flow, type FlowKind, type ResolvedPath, type Vec2 } from '../state/types';
-import { pointer, runtime, ui, world, deviceAtCell } from '../state/world';
+import { assertNever, type Building, type Cable, type Device, type Flow, type FlowKind, type ResolvedPath, type Vec2 } from '../state/types';
+import { focusOf, pointer, runtime, ui, world, deviceAtCell } from '../state/world';
 import { doorStates, smartDoorsLocked } from '../sim/staff';
 import { inParking, isIndoor, isPath, placementError, tileAt } from '../state/floor';
 import { flowShape } from '../sim/net';
@@ -132,7 +132,10 @@ export class Renderer {
       this.applyCamera();
       if (reason !== 'camera') this.redrawWorld();
     });
-    ui.subscribe((u) => { if ((u.level ?? 0) !== this.iso.level) this.setLevel(u.level ?? 0); else this.redrawInteractive(); });
+    ui.subscribe((u) => {
+      if (focusOf(world.get(), u) !== this.iso.focus) { if ((u.level ?? 0) !== this.iso.level) this.setLevel(u.level ?? 0); else this.redrawWorld(); return; }
+      if ((u.level ?? 0) !== this.iso.level) this.setLevel(u.level ?? 0); else this.redrawInteractive();
+    });
     pointer.subscribe(() => this.redrawInteractive());
     this.app.renderer.on('resize', () => this.drawGrid());
     this.app.ticker.add(() => { const now = performance.now(); this.drawStreams(now); if (this.view === 'iso') { this.iso.animate(world.get(), now); this.iso.drawPeople(world.get(), now); } });
@@ -197,6 +200,15 @@ export class Renderer {
     const c = world.get().camera;
     return this.iso.pick((sx - c.x) / c.scale, (sy - c.y) / c.scale);
   }
+
+  /** A closed building under a screen point, if any. */
+  pickBuilding(sx: number, sy: number): Building | null {
+    const c = world.get().camera;
+    return this.iso.pickBuilding(world.get(), (sx - c.x) / c.scale, (sy - c.y) / c.scale);
+  }
+
+  /** Can you see inside this cell right now? */
+  cellVisible(gx: number, gy: number): boolean { return this.iso.cellVisible(world.get(), gx, gy); }
 
   /** Switch between the flat plan and the isometric view, keeping the same spot in the middle. */
   private setLevel(level: number): void {
@@ -280,7 +292,7 @@ export class Renderer {
     const f = s.floor;
     const L = this.iso.level;
     const owned = Object.values(s.buildings).filter((b) => b.owned).map((b) => `${b.id}:${b.floors}`).join(',');
-    const key = `${L}|${owned}|${JSON.stringify(f.tiles)}|${JSON.stringify(doorStates())}`;
+    const key = `${L}|${this.iso.focus}|${owned}|${JSON.stringify(f.tiles)}|${JSON.stringify(doorStates())}`;
     if (key === this.floorKey) return;
     this.floorKey = key;
     const g = this.floorG;
@@ -288,7 +300,7 @@ export class Renderer {
     drawGround(g, s, L, (x, y) => tileAt(f, x, y), (x, gy) => {
       // a building cell: draw the storey's floor only if it is one of yours
       const b = buildingAt(s.buildings, x, gy);
-      if (!b || !b.owned || levelOf(gy) >= b.floors) return;
+      if (!b || !b.owned || b.id !== this.iso.focus || levelOf(gy) >= b.floors) return;
       const t = tileAt(f, x, gy);
       const c = floorTileColor(t);
       if (!c) return;
@@ -359,7 +371,7 @@ export class Renderer {
     const seen = new Set<string>();
     for (const r of runtime.rooms) {
       const [rx, ry] = (r.cells[0] ?? '0,0').split(',').map(Number) as [number, number];
-      if (!buildingAt(s.buildings, rx, ry)?.owned) continue;
+      if (!this.iso.cellVisible(s, rx, ry)) continue;
       const t = s.climate.rooms[r.key] ?? s.climate.outside;
       const hot = Math.max(0, Math.min(1, (t - 26) / 30));
       const cold = Math.max(0, Math.min(1, (20 - t) / 8));
@@ -410,6 +422,7 @@ export class Renderer {
     const iso = this.view === 'iso';
     for (const e of Object.values(s.staff.engineers)) {
       const x = e.x * CELL, y = e.y * CELL;
+      if (!this.iso.cellVisible(s, Math.floor(e.x), Math.floor(e.y))) continue;
       g.roundRect((Math.floor(e.x) - 2) * CELL, (Math.floor(e.y) - 2) * CELL, CELL * 5, CELL * 5, 10)
         .fill({ color: COLORS.sight, alpha: 0.045 }).stroke({ width: 1, color: COLORS.sight, alpha: 0.16 });
       const seated = e.state === 'seated';
@@ -441,6 +454,7 @@ export class Renderer {
     }
     for (const t of Object.values(s.staff.trespassers)) {
       const x = t.x * CELL, y = t.y * CELL;
+      if (!this.iso.cellVisible(s, Math.floor(t.x), Math.floor(t.y))) continue;
       if (!iso) {
         g.ellipse(x, y + 2, 8, 5).fill({ color: COLORS.carShadow, alpha: 0.18 });
         g.circle(x, y, 7).fill({ color: COLORS.stranger }).stroke({ width: 2, color: COLORS.strangerRim });
@@ -457,6 +471,8 @@ export class Renderer {
   }
 
   private redrawWorld(): void {
+    const f = focusOf(world.get(), ui.get());
+    if (f !== this.iso.focus) { this.iso.focus = f; this.floorKey = ''; this.iso.clear(); }
     this.drawFloor();
     this.drawDoors();
     this.drawPeople();
@@ -498,6 +514,9 @@ export class Renderer {
         plate.visible = show;
       }
       v.root.position.set((d.gridPos.gx + 0.5) * CELL, (d.gridPos.gy + 0.5) * CELL);
+      const vis = this.iso.cellVisible(s, d.gridPos.gx, d.gridPos.gy);
+      v.root.visible = vis;
+      v.label.visible = vis;
       const an = this.anchor(d);
       v.label.position.set(an.x, an.y);
       if (d.kind === 'badge') { v.icon.visible = false; v.name.visible = false; v.sub.visible = false; v.plate.visible = false; continue; }
@@ -536,6 +555,7 @@ export class Renderer {
     const pg = this.ports;
     pg.clear();
     for (const d of Object.values(s.devices)) {
+      if (!this.iso.cellVisible(s, d.gridPos.gx, d.gridPos.gy)) continue;
       for (const port of d.ports) {
         const pos = portPos(d, port.index);
         const cableId = used.get(`${d.id}:${port.index}`);
@@ -801,6 +821,7 @@ export class Renderer {
     const hg = this.healthBadges;
     hg.clear();
     for (const d of Object.values(s.devices)) {
+      if (!this.iso.cellVisible(s, d.gridPos.gx, d.gridPos.gy)) continue;
       const an = this.anchor(d);
       const bx = an.x - BODY / 2 + 4;
       const by = an.top + 4;
