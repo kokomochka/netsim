@@ -81,6 +81,18 @@ const PALETTE_CSS = `
   .chip[aria-pressed="true"] { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: var(--accent-soft); color: var(--accent); }
   .swatch { width: 16px; height: 4px; border-radius: 2px; flex: none; }
   .glyph { display: flex; align-items: center; justify-content: center; }
+  @media (min-width: 1101px) {
+    .group { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+    .head, .cables { grid-column: 1 / -1; }
+    .cables { padding: 2px 0 4px; flex-direction: row; flex-wrap: wrap; }
+    .tool { grid-template-columns: 1fr; justify-items: center; text-align: center; row-gap: 2px; padding: 6px 4px; min-height: 0; }
+    .tool .glyph { grid-row: auto; width: 30px; height: 30px; }
+    .tool .glyph svg { width: 20px; height: 20px; }
+    .name { font-size: 12px; align-self: auto; }
+    .price { align-self: auto; }
+    .head { padding: 8px 4px 2px; }
+    .sep { margin: 2px 0; }
+  }
   @media (max-width: 1100px) {
     :host { width: 96px; padding: 10px 8px; }
     .tool { grid-template-columns: 1fr; justify-items: center; text-align: center; row-gap: 3px; padding: 7px 4px; }
@@ -110,6 +122,7 @@ export class NsPalette extends HTMLElement {
   private shadow: ShadowRoot;
   private unsub?: () => void;
   private root!: HTMLElement;
+  private far = false;
 
   constructor() {
     super();
@@ -239,17 +252,29 @@ export class NsPalette extends HTMLElement {
     headA.className = 'head';
     headA.textContent = 'Be an ISP';
     acc.appendChild(headA);
-    for (const a of ['cell', 'home'] as const) {
-      const def = ACCESS[a];
-      const active = t.mode === 'place' && t.kind === 'tower' && (t.access ?? 'cell') === a;
-      acc.appendChild(this.makeToolButton(kindGlyph('tower'), def.label, '$' + def.price, active, def.label + ': ' + def.blurb + '. Route its traffic to the ISP gateway and earn per Mbps.',
-        () => setTool(active ? { mode: 'select' } : { mode: 'place', kind: 'tower', access: a })));
+    // where the site goes: here on the map, or across town on a leased line
+    const where = document.createElement('div');
+    where.className = 'cables';
+    for (const [far, label, tip] of [[false, 'On the map', 'Place it on open ground and run a cable to it'], [true, 'Across town', `Off the map, on a leased line ($${LEASED_LINE.price} to set up, $${LEASED_LINE.upkeep}/s). Repairs mean a drive.`]] as const) {
+      const chip = document.createElement('button');
+      chip.className = 'chip';
+      chip.textContent = label;
+      chip.title = tip;
+      chip.setAttribute('aria-pressed', String(this.far === far));
+      chip.addEventListener('click', () => { this.far = far; if (far && t.mode === 'place' && t.kind === 'tower') setTool({ mode: 'select' }); else this.render(); });
+      where.appendChild(chip);
     }
+    acc.appendChild(where);
     for (const a of ['cell', 'home'] as const) {
       const def = ACCESS[a];
-      acc.appendChild(this.makeToolButton(kindGlyph('tower'), `${def.label}, across town`, `$${def.price + LEASED_LINE.price}`, false,
-        `${def.label} somewhere off the map: no cable to lay, a leased line instead ($${LEASED_LINE.price} to set up, $${LEASED_LINE.upkeep}/s). Repairs mean a drive.`,
-        () => { const id = buildFarTower(a); if (id) { select({ type: 'device', id }); toast('Built across town. Open its panel to bring its leased line into one of your buildings.', 'good'); } }));
+      const active = !this.far && t.mode === 'place' && t.kind === 'tower' && (t.access ?? 'cell') === a;
+      const price = this.far ? def.price + LEASED_LINE.price : def.price;
+      acc.appendChild(this.makeToolButton(kindGlyph('tower'), def.label, '$' + price, active, def.label + ': ' + def.blurb + (this.far ? '. Built across town on a leased line.' : '. Route its traffic to the ISP gateway and earn per Mbps.'),
+        () => {
+          if (!this.far) { setTool(active ? { mode: 'select' } : { mode: 'place', kind: 'tower', access: a }); return; }
+          const id = buildFarTower(a);
+          if (id) { select({ type: 'device', id }); toast(`Built in town, off the map. Bring its leased line into one of your buildings from its panel.`, 'good'); }
+        }));
     }
     this.root.appendChild(acc);
 

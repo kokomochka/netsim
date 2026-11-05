@@ -121,6 +121,7 @@
     <ns-banner></ns-banner>
     <ns-where></ns-where>
     <ns-reception></ns-reception>
+    <ns-toolhint hidden></ns-toolhint>
     <ns-goals></ns-goals>
     <ns-inspector hidden></ns-inspector>
     <ns-toasts></ns-toasts>

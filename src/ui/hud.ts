@@ -38,6 +38,29 @@ function hintText(): string {
   }
 }
 
+/** What the current tool does, shown on the map while a tool other than Select is in hand. */
+export class NsToolHint extends HTMLElement {
+  private shadow = this.attachShadow({ mode: 'open' });
+  connectedCallback(): void {
+    this.shadow.appendChild(baseStyle());
+    const st = document.createElement('style');
+    st.textContent = `:host { position: absolute; z-index: 15; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: min(560px, calc(100% - 24px)); pointer-events: none; }
+      div { background: var(--ink); color: var(--paper); font-size: 13px; line-height: 1.4; padding: 8px 14px; border-radius: 999px; box-shadow: var(--shadow); text-align: center; }
+      :host([hidden]) { display: none; }
+`;
+    this.shadow.appendChild(st);
+    const box = document.createElement('div');
+    box.setAttribute('aria-live', 'polite');
+    this.shadow.appendChild(box);
+    // out of the way of a visitor's card at reception
+    const paint = () => { const u = ui.get(); const on = (u.tool.mode !== 'select' || !!u.pendingCable) && !document.querySelector('ns-reception')?.hasAttribute('open'); this.hidden = !on; box.textContent = on ? hintText() : ''; };
+    ui.subscribe(paint);
+    world.subscribe((_s, r) => { if (r !== 'camera') paint(); });
+    paint();
+  }
+}
+customElements.define('ns-toolhint', NsToolHint);
+
 const SPEEDS = [
   { value: 0, label: '❚❚', title: 'Pause (Space)' },
   { value: 1, label: '1×', title: '1× speed (1)' },
@@ -122,8 +145,19 @@ const TOPBAR_CSS = `
   .menu button { text-align: left; border: 0; background: transparent; font-weight: 500; color: var(--ink); }
   .menu button:hover { background: var(--accent-soft); color: var(--accent); }
   .menu small { color: var(--ink-faint); font-size: 11px; padding: 0 12px 6px; }
+  .menu button.theme-item { display: none; }
   button.confirm { color: var(--bad) !important; background: var(--bad-soft) !important; }
   @media (max-width: 1280px) { .hint { display: none; } :host { grid-template-columns: auto 1fr; } .right { justify-content: flex-end; } }
+  button.goals { white-space: nowrap; }
+  @media (max-width: 1240px) {
+    .util { display: none !important; }
+    button.theme { display: none; }
+    .menu button.theme-item { display: block !important; }
+    .undo-pair [data-action="redo"] { display: none; }
+    .right { gap: 6px; }
+    button.goals { padding-left: 9px; padding-right: 9px; }
+  }
+  @media (max-width: 1060px) { .logo .word { display: none; } .speeds button { min-width: 30px; padding: 2px 6px; } }
   @media (max-width: 980px) { .econ .k:nth-child(3) { display: none; } }
   @media (max-width: 759px) {
     :host { grid-template-columns: 1fr; row-gap: 8px; margin: 0; border-radius: 0; padding-top: 8px; padding-bottom: 8px; }
@@ -135,6 +169,18 @@ const TOPBAR_CSS = `
     .right { gap: 6px; }
     button { padding: 5px 9px; font-size: 12px; min-height: 32px; }
     .logo { font-size: 18px; } .logo::before { width: 30px; height: 30px; }
+    /* two rows: money, speed and the menu; then the drawers and undo */
+    .brand { display: none; }
+    .econ { order: 1; } .speeds { order: 2; } .menu-wrap { order: 3; }
+    button.goals { order: 4; padding: 5px 7px; } .undo-pair { order: 8; }
+    .right { gap: 5px; }
+    .econ .k { padding: 3px 7px; }
+    .speeds button { min-width: 28px; padding: 2px 5px; }
+    .undo-pair [data-action="redo"] { display: none; }
+    :host { padding-left: 10px; padding-right: 10px; }
+    button.theme { display: none; }
+    .badge { margin-left: 4px; min-width: 16px; padding: 1px 4px; }
+    .menu button.theme-item { display: block !important; }
   }
 `;
 
@@ -170,6 +216,7 @@ export class NsTopbar extends HTMLElement {
           <div class="k util"><small>Uplink</small><div class="util-bar"><i data-el="util-bar"></i></div><span data-el="util">0 / 100 Mbps</span></div>
         </div>
         <div class="speeds" role="radiogroup" aria-label="Simulation speed"></div>
+        <button class="goals" data-action="deals" data-el="dealbtn" title="Clients, visitors at reception and what they pay">Deals<span class="badge" data-el="dealcount">0</span></button>
         <button class="goals" data-action="domains" title="Public IPs, domains and DNS">Internet</button>
         <button class="goals" data-action="staff" title="Engineers, jobs and security">Staff<span class="badge" data-el="staffcount">0</span></button>
         <button class="goals" data-action="monitoring" data-el="monbtn" title="What your monitoring servers see" hidden>Monitoring<span class="badge" data-el="moncount">0</span></button>
@@ -189,6 +236,7 @@ export class NsTopbar extends HTMLElement {
             <button data-action="import">Upload save file…</button>
             <input type="file" id="save-file" accept=".json,.netsim,application/json" hidden>
             <button data-action="fit">Fit view (F)</button>
+            <button data-action="theme" class="theme-item">Light / dark mode</button>
             <button data-action="new">New game</button>
           </div>
         </div>
@@ -282,6 +330,8 @@ export class NsTopbar extends HTMLElement {
     switch (a) {
       case 'menu': this.toggleMenu(this.menu.hidden); return;
       case 'goals': (document.querySelector('ns-goals') as NsGoals | null)?.show('goals'); return;
+      case 'deals': (document.querySelector('ns-goals') as NsGoals | null)?.show('deals'); return;
+      case 'theme': toggleTheme(); this.toggleMenu(false); return;
       case 'staff': (document.querySelector('ns-goals') as NsGoals | null)?.show('staff'); return;
       case 'domains': (document.querySelector('ns-goals') as NsGoals | null)?.show('domains'); return;
       case 'undo': doUndo(false); return;
@@ -301,7 +351,11 @@ export class NsTopbar extends HTMLElement {
   private render(): void {
     const s = world.get();
     const e = this.els;
-    this.shadow.querySelector('.hint')!.textContent = hintText();
+    this.shadow.querySelector('.hint')!.textContent = '';
+    const waiting = Object.values(s.deals?.visitors ?? {}).some((v) => v.state === 'waiting');
+    const open = Object.values(s.deals?.contracts ?? {}).filter((c) => c.state === 'setup' || c.state === 'live').length;
+    e.dealcount!.textContent = waiting ? 'visitor' : String(open);
+    e.dealcount!.style.background = waiting ? 'var(--warn)' : '';
     const bal = s.economy.balance;
     e.balance!.textContent = `${bal < 0 ? '−' : ''}$${Math.abs(Math.floor(bal)).toLocaleString()}`;
     e.balance!.classList.toggle('neg', bal < 0);
@@ -312,15 +366,18 @@ export class NsTopbar extends HTMLElement {
     const up = uptimePercent(s);
     e.uptime!.textContent = up === null ? '—' : `${up.toFixed(up >= 99.95 ? 1 : 2)} %`;
     e.uptime!.title = 'Average site availability, rolling 60 minutes';
-    const uplink = Object.values(s.devices).find((d) => d.kind === 'uplink');
+    const ups = Object.values(s.devices).filter((d) => d.kind === 'uplink');
+    const uplink = ups[0];
     if (uplink?.kind === 'uplink') {
-      const offeredPct = (runtime.uplinkMbps / uplink.bandwidthMbps) * 100;
+      // all your buildings' lines together
+      const cap = ups.reduce((a, d) => a + (d.kind === 'uplink' ? d.bandwidthMbps : 0), 0);
+      const offeredPct = (runtime.uplinkMbps / cap) * 100;
       const pct = Math.min(100, offeredPct);
       (e['util-bar'] as HTMLElement).style.width = `${Math.min(100, pct)}%`;
       (e['util-bar'] as HTMLElement).style.background = offeredPct > 100 ? 'var(--bad)' : pct > 80 ? 'var(--warn)' : 'var(--accent)';
       e.util!.textContent = offeredPct > 100.5
-        ? `${uplink.bandwidthMbps} / ${uplink.bandwidthMbps} Mbps · ${(runtime.uplinkMbps - uplink.bandwidthMbps).toFixed(0)} dropped`
-        : `${runtime.uplinkMbps.toFixed(0)} / ${uplink.bandwidthMbps} Mbps`;
+        ? `${cap} / ${cap} Mbps · ${(runtime.uplinkMbps - cap).toFixed(0)} dropped`
+        : `${runtime.uplinkMbps.toFixed(0)} / ${cap} Mbps`;
     }
     SPEEDS.forEach((sp, i) => this.speedBtns[i]!.setAttribute('aria-pressed', String(sp.value === s.speed)));
     const done = ACHIEVEMENTS.filter((a) => s.achievements[a.id]?.done).length;
