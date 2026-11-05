@@ -218,6 +218,7 @@ export class VolumeScene {
 
   /** Is this cell's inside on show? Cells outside buildings always are. */
   cellVisible(s: WorldState, gx: number, gy: number): boolean {
+    if (gx < -20) return false;      // sites across town live off the map
     const b = buildingAt(s.buildings, gx, gy);
     return !b || (b.owned && b.id === this.focus);
   }
@@ -444,6 +445,7 @@ export class VolumeScene {
       g.zIndex = wy + 0.5;
     };
     for (const e of Object.values(s.staff.engineers)) {
+      if (e.away) continue;
       const seated = e.state === 'seated';
       const desk = seated && e.deskId ? s.devices[e.deskId] : undefined;
       const dx = desk ? (desk.gridPos.gx + 0.5) * CELL : 0, dyy = desk ? (desk.gridPos.gy + 0.5) * CELL : 0;

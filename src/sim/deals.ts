@@ -345,7 +345,7 @@ function coverReception(s: WorldState): void {
   if (anyone) {
     if (desk.ownerId && s.staff.engineers[desk.ownerId]) return;    // someone sits there anyway
     if (engineers.some((e) => cheb(e.x - 0.5, e.y - 0.5, desk.gridPos.gx, desk.gridPos.gy) <= COVER_RADIUS)) return;
-    const free = engineers.filter((e) => !e.jobId && e.state !== 'chasing')
+    const free = engineers.filter((e) => !e.jobId && e.state !== 'chasing' && !e.away)
       .sort((a, b) => cheb(a.x, a.y, desk.gridPos.gx, desk.gridPos.gy) - cheb(b.x, b.y, desk.gridPos.gx, desk.gridPos.gy))[0];
     if (!free) return;
     free.homeDeskId = free.deskId;

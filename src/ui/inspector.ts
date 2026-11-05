@@ -9,8 +9,7 @@
 import {
   ACCESS, AC_COOLING_KW, CABLE_BANDWIDTH, CELL, MEDIA_SWAP_PRICE, OVERHEAT_C, CPU_PARTS, DISK_PARTS, DISK_TYPES, GPU_PARTS, NIC_PARTS, RAM_PARTS, MON_AGENT_PORT, ROLES, SNMP_PORT, TICKS_PER_SEC, UPLINK_TIER,
   CERT_BONUS, CERT_PRICE, CERT_UPKEEP, CHASSIS, DEVICE_WATTS, PSU2_PRICE, RAID, SHUTDOWN_C, TEMP_CAP_RANGE, THROTTLE_C,
-  type PartGate,
-} from '../balance';
+  type PartGate, LEASED_LINE } from '../balance';
 import { GATE_NAME, gateOpen, partsProblem, peakWatts, roleBlocker, roleUse, serverCaps, swapCost } from '../state/hardware';
 import { compName, OFF_LABEL, serverDown, serverPower, wattsOf } from '../sim/hw';
 import { isMonitored, knownProblems } from '../sim/monitor';
@@ -36,8 +35,7 @@ import {
 } from '../state/validate';
 import {
   addRole, allFqdns, buyBiggerBlock, moveToFloor, nextBlockUpgrade, editRole, setRoleLinks, setPortMedia, setServiceFqdn, buyPart, deleteCable, deleteDevice, editDevice, genId, publicIps, removeRole, rotateDevice, runtime,
-  select, setCableType, setServicePublicIp, setUplinkTier, toast, ui, world, cancelUpgrade, onBench, pendingParts, setCert,
-} from '../state/world';
+  select, setCableType, setServicePublicIp, setUplinkTier, toast, ui, world, cancelUpgrade, onBench, pendingParts, setCert, leaseLine } from '../state/world';
 import { cableGlyph, kindCss, kindGlyph } from './glyphs';
 import { baseStyle } from './styles';
 import { buildingAt, levelOf } from '../state/city';
@@ -1301,7 +1299,35 @@ export class NsInspector extends HTMLElement {
       const x = v();
       return renderTrace(world.get(), x?.subs.flowId ? runtime.paths[x.subs.flowId] : undefined, true);
     }));
-    return [intro, this.addressingSection(s, d), subs];
+    return [intro, ...(d.far ? [this.farSection(s, d)] : []), this.addressingSection(s, d), subs];
+  }
+
+  /** A site across town: where it is, and the leased line that brings it in. */
+  private farSection(s: WorldState, d: DeviceOf<'tower'>): HTMLElement {
+    const line = Object.values(s.cables).find((c) => c.leased && (c.a.deviceId === d.id || c.b.deviceId === d.id));
+    const sec = section(heading('Across town', d.far!.place));
+    sec.appendChild(el('p', 'note', `Off the map in ${d.far!.place}, about ${d.far!.travelS} s away by van. An engineer who goes there to fix it is away for the drive both ways.`));
+    if (line) {
+      const end = line.a.deviceId === d.id ? line.b : line.a;
+      const at = s.devices[end.deviceId];
+      sec.appendChild(el('p', 'explain ok', `Leased line (${LEASED_LINE.mbps} Mbps, $${LEASED_LINE.upkeep}/s) arrives at ${at?.name ?? '?'} ${at?.ports[end.port]?.label ?? ''}.`));
+      sec.appendChild(btn('Cancel the line', () => deleteCable(line.id), 'danger'));
+      return sec;
+    }
+    sec.appendChild(el('p', 'explain bad', 'No line yet: its customers can\'t reach anything. Bring the line in on a free fibre port of a router, firewall or switch.'));
+    const used = new Set(Object.values(s.cables).flatMap((c) => [`${c.a.deviceId}:${c.a.port}`, `${c.b.deviceId}:${c.b.port}`]));
+    const opts: { value: string; label: string }[] = [];
+    for (const x of Object.values(s.devices)) {
+      if (x.id === d.id || (x.kind === 'tower' && x.far) || !['router', 'firewall', 'switch', 'uplink', 'ddos_scrubber'].includes(x.kind)) continue;
+      x.ports.forEach((p, i) => { if (p.media === 'fibre' && !used.has(`${x.id}:${i}`)) opts.push({ value: `${x.id}:${i}`, label: `${x.name} ${p.label}` }); });
+    }
+    if (!opts.length) { sec.appendChild(el('p', 'note', 'None of your routers, firewalls or switches has a free fibre port. Fit a fibre transceiver on one (Hardware tab).')); return sec; }
+    sec.appendChild(makeSelect(`far-${d.id}`, [{ value: '', label: 'Bring the line in at…' }, ...opts], '', 'Leased line port', (v) => {
+      if (!v) return;
+      const [id, port] = v.split(':');
+      if (leaseLine(d.id, { deviceId: id!, port: Number(port) })) toast(`Leased line to ${d.name} is in.`, 'good');
+    }));
+    return sec;
   }
 
   private deskBody(s: WorldState, d: DeviceOf<'desk'>): HTMLElement[] {

@@ -113,6 +113,7 @@ export function routeCable(state: WorldState, cable: Pick<Cable, 'a' | 'b'>, occ
   const da = state.devices[cable.a.deviceId];
   const db = state.devices[cable.b.deviceId];
   if (!da || !db) return [];
+  if ((da.kind === 'tower' && da.far) || (db.kind === 'tower' && db.far)) return [];   // a leased line: nothing to draw
   const a = portPos(da, cable.a.port);
   const b = portPos(db, cable.b.port);
   const dirA = portDir(da, cable.a.port);

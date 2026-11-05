@@ -422,7 +422,7 @@ export class Renderer {
     const iso = this.view === 'iso';
     for (const e of Object.values(s.staff.engineers)) {
       const x = e.x * CELL, y = e.y * CELL;
-      if (!this.iso.cellVisible(s, Math.floor(e.x), Math.floor(e.y))) continue;
+      if (e.away || !this.iso.cellVisible(s, Math.floor(e.x), Math.floor(e.y))) { const t = this.labelViews.get(e.id); if (t) t.visible = false; seen.add(e.id); continue; }
       g.roundRect((Math.floor(e.x) - 2) * CELL, (Math.floor(e.y) - 2) * CELL, CELL * 5, CELL * 5, 10)
         .fill({ color: COLORS.sight, alpha: 0.045 }).stroke({ width: 1, color: COLORS.sight, alpha: 0.16 });
       const seated = e.state === 'seated';

@@ -11,7 +11,7 @@ import {
   REPUTATION_OUTAGE_HIT, ROUTER_CAPACITY_MBPS, SITE_MBPS, SITE_REVENUE, SWITCH_CAPACITY_MBPS, TICKS_PER_SEC,
   UPLINK_TIER, UPTIME_BUCKETS, DISK_TYPES, ENGINEER_SALARY, GPU_REVENUE, INTRUSION_CHECK_S, LATERAL_MBPS,
   ACCESS, AI_MBPS, CLOUD_BASE_MBPS, INTERNET_IP, DNS_MBPS, DNS_REVENUE, DOMAIN_RENEWAL, NAMED_DEMAND_BONUS, REGISTRAR_DNS_FEE, CLOUD_GROWTH_GB_PER_S, CLOUD_PAY_PER_GB, FRONTEND_LINK_MBPS, GPU_LINK_MBPS,
-  LATERAL_SECONDS, PATCH_FIRST_TICK, TRANSIT_DST, DEV_BUG_CHANCE, DEV_BUG_WINDOW_S, DEV_MAX_QUALITY, DEV_QUALITY_STEP, DEV_SECONDS_PER_RELEASE, PATCH_INTERVAL_S, ROLES, TRESPASS_FIRST_TICK, TRESPASS_INTERVAL_S, VULNERABLE_AFTER_S, PATCH_FETCH_MBPS, MIRROR_FETCH_S, MIRROR_FETCH_MBPS, DEMAND_SOFT_CAP, MITM_MEAN_S, PLAINTEXT_PORTS } from '../balance';
+  LATERAL_SECONDS, PATCH_FIRST_TICK, TRANSIT_DST, DEV_BUG_CHANCE, DEV_BUG_WINDOW_S, DEV_MAX_QUALITY, DEV_QUALITY_STEP, DEV_SECONDS_PER_RELEASE, PATCH_INTERVAL_S, ROLES, TRESPASS_FIRST_TICK, TRESPASS_INTERVAL_S, VULNERABLE_AFTER_S, PATCH_FETCH_MBPS, MIRROR_FETCH_S, MIRROR_FETCH_MBPS, DEMAND_SOFT_CAP, MITM_MEAN_S, PLAINTEXT_PORTS, LEASED_LINE } from '../balance';
 import { carryComps, diskPrice, freshComps, roleUse, serverCaps, serverPrice, serverUpkeep, specsFor, wipesArray } from '../state/hardware';
 import { compName, effTflops, failedComps, hwFastTick, serverDown, setHwHooks, syncHealth } from './hw';
 import { knownProblems, monitorFlows, noticeTick, setMonitorHooks } from './monitor';
@@ -422,6 +422,7 @@ function economy(state: WorldState): void {
   for (const d of Object.values(state.devices)) if (d.kind === 'tower') rev += towerRevenue(state, d);
   let upkeep = 0;
   for (const d of Object.values(state.devices)) upkeep += upkeepOf(d);
+  for (const c of Object.values(state.cables)) if (c.leased) upkeep += LEASED_LINE.upkeep;
   upkeep += Object.values(state.staff.engineers).reduce((a, e) => a + (e.salary ?? ENGINEER_SALARY), 0);
   for (const d of Object.values(state.domains)) if (!d.client) upkeep += DOMAIN_RENEWAL + (d.hosting === 'registrar' ? REGISTRAR_DNS_FEE : 0);
   for (const d of Object.values(state.devices)) if (d.kind === 'tower') upkeep += towerPenalty(d);

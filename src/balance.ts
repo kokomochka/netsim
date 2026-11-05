@@ -255,6 +255,9 @@ export const ACCESS: Record<'cell' | 'home', AccessDef> = {
   cell: { label: 'Cell site', namePrefix: 'Cell', blurb: 'Mobile subscribers: heavy traffic, evening peaks, event spikes', price: 1800, upkeep: 0.06, mbps: 220, payPerMbps: 0.004, bonus: 0.15, penalty: 0.2, spikes: true },
   home: { label: 'Home networks', namePrefix: 'Homes', blurb: 'A street of home broadband customers', price: 450, upkeep: 0.015, mbps: 45, payPerMbps: 0.005, bonus: 0.04, penalty: 0.04, spikes: false },
 };
+/** A site across town: no cable to lay, but a line to rent and a drive for every repair. */
+export const LEASED_LINE = { price: 250, upkeep: 0.03, mbps: 1000 };
+export const FAR_PLACES = ['Riverside', 'the Old Town', 'Northgate', 'the Docks', 'Hillcrest', 'the Industrial Estate', 'Westfield', 'the University quarter', 'Marsh End', 'Station Road'];
 export const TRANSIT_DST = '1.1.1.1';        // representative internet destination
 
 // ─── AI and cloud roles ────────────────────────────────────────────────────

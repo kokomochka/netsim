@@ -266,6 +266,7 @@ export type AccessKind = 'cell' | 'home';
 /** Access uplink: a cell site or a street of home networks whose traffic you carry to the ISP. */
 export interface TowerDevice extends DeviceBase {
   kind: 'tower';
+  far?: { place: string; travelS: number };   // across town, off the map: reached by a leased line and a drive
   access: AccessKind;
   addressing: 'static' | 'dhcp';
   ip: string;
@@ -429,6 +430,7 @@ export interface Cable {
   type: CableType;
   bandwidthMbps: number;
   path: Vec2[];
+  leased?: boolean;              // a line rented from the city's carrier to a site across town: no cable to lay
 }
 
 // ─── Flow ───────────────────────────────────────────────────────────────────
@@ -732,7 +734,7 @@ export interface Walker {
   path: GridPos[];               // remaining waypoints
 }
 
-export type EngineerState = 'seated' | 'idle' | 'roaming' | 'walking' | 'working' | 'chasing';
+export type EngineerState = 'seated' | 'idle' | 'roaming' | 'walking' | 'working' | 'chasing' | 'away';
 
 export interface Engineer extends Walker {
   id: string;
@@ -746,6 +748,8 @@ export interface Engineer extends Walker {
   traits?: Trait[];
   salary?: number;               // $/s
   homeDeskId?: string | null;    // their own desk while they cover reception
+  away?: 'out' | 'work' | 'back'; // off the map: driving to a site across town, working there, driving back
+  awayUntil?: number;
 }
 
 /** Small, realistic strengths. Nothing that bends physics. */

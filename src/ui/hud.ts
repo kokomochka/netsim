@@ -5,7 +5,7 @@ import { uptimePercent } from '../sim/engine';
 import { DEVICE_DEFS } from '../state/devices';
 import { ENGINEER_HIRE, ENGINEER_SALARY, TRAITS } from '../balance';
 import { engineerActivity, smartDoorsLocked } from '../sim/staff';
-import { addPublicAddr, buyBuilding, buyDomain, dropDomain, editDomain, fireEngineer, hireEngineer, onToast, publicIps, removePublicAddr, runtime, toast, togglePublicService, ui, world, type ToastKind, focusOf } from '../state/world';
+import { addPublicAddr, buyBuilding, buyDomain, dropDomain, editDomain, fireEngineer, hireEngineer, onToast, publicIps, removePublicAddr, runtime, toast, togglePublicService, ui, world, type ToastKind, focusOf, select } from '../state/world';
 import { DOMAIN_RENEWAL, REGISTRAR_DNS_FEE, TLDS } from '../balance';
 import { resolvePublic } from '../sim/dns';
 import { buildCtx } from '../sim/net';
@@ -434,7 +434,7 @@ export class NsWhere extends HTMLElement {
     const focus = focusOf(s, ui.get());
     const b = focus ? s.buildings[focus] : undefined;
     const level = ui.get().level ?? 0;
-    const key = `${focus}|${level}|${bs.map((x) => `${x.id}${x.owned ? 1 : 0}`).join()}|${Math.floor(s.economy.balance / 500)}`;
+    const key = `${focus}|${level}|${bs.map((x) => `${x.id}${x.owned ? 1 : 0}`).join()}|${Math.floor(s.economy.balance / 500)}|${Object.values(s.devices).filter((d) => d.kind === 'tower' && d.far).length}`;
     if (key === this.last) return;
     this.last = key;
     this.box.innerHTML = '';
@@ -458,7 +458,13 @@ export class NsWhere extends HTMLElement {
       o.selected = x.id === b?.id;
       sel.appendChild(o);
     }
+    const far = Object.values(s.devices).filter((d) => d.kind === 'tower' && d.far);
+    if (far.length) {
+      const og = document.createElement('option'); og.disabled = true; og.textContent = '── Across town'; sel.appendChild(og);
+      for (const d of far) { const o = document.createElement('option'); o.value = `dev:${d.id}`; o.textContent = `${d.name} · ${d.kind === 'tower' ? d.far!.place : ''}`; sel.appendChild(o); }
+    }
     sel.addEventListener('change', () => {
+      if (sel.value.startsWith('dev:')) { select({ type: 'device', id: sel.value.slice(4) }); this.last = ''; this.render(); sel.blur(); return; }
       const nb = world.get().buildings[sel.value];
       if (!nb) showCity(); else openBuilding(nb, Math.min(level, nb.owned ? nb.floors - 1 : 0));
       sel.blur();

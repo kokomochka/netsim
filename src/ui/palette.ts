@@ -1,8 +1,8 @@
 // Tool palette — plain DOM custom element (no Lit).
-import { ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, MULTIFLOOR_SWITCH_PRICE, TILE_PRICE } from '../balance';
+import { ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, MULTIFLOOR_SWITCH_PRICE, TILE_PRICE, LEASED_LINE } from '../balance';
 import { DEVICE_DEFS, NETWORK_KINDS } from '../state/devices';
 import type { CableType, Tile } from '../state/types';
-import { setTool, ui } from '../state/world';
+import { setTool, ui, buildFarTower, select, toast } from '../state/world';
 import { CABLE_COLOR, COLORS, KIND_COLOR } from '../render/palette';
 import { onThemeChange } from './theme';
 import { cableGlyph, hex, kindGlyph, selectGlyph } from './glyphs';
@@ -244,6 +244,12 @@ export class NsPalette extends HTMLElement {
       const active = t.mode === 'place' && t.kind === 'tower' && (t.access ?? 'cell') === a;
       acc.appendChild(this.makeToolButton(kindGlyph('tower'), def.label, '$' + def.price, active, def.label + ': ' + def.blurb + '. Route its traffic to the ISP gateway and earn per Mbps.',
         () => setTool(active ? { mode: 'select' } : { mode: 'place', kind: 'tower', access: a })));
+    }
+    for (const a of ['cell', 'home'] as const) {
+      const def = ACCESS[a];
+      acc.appendChild(this.makeToolButton(kindGlyph('tower'), `${def.label}, across town`, `$${def.price + LEASED_LINE.price}`, false,
+        `${def.label} somewhere off the map: no cable to lay, a leased line instead ($${LEASED_LINE.price} to set up, $${LEASED_LINE.upkeep}/s). Repairs mean a drive.`,
+        () => { const id = buildFarTower(a); if (id) { select({ type: 'device', id }); toast('Built across town. Open its panel to bring its leased line into one of your buildings.', 'good'); } }));
     }
     this.root.appendChild(acc);
 

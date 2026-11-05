@@ -1,7 +1,7 @@
 // The two stores (saved world + transient UI) and every world mutation. Phase 2.
-import { seeded } from '../rng';
+import { random, seeded } from '../rng';
 import { STRIDE, buildingAt, generateCity, levelOf, localY } from './city';
-import { CERT_PRICE, CHASSIS, ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TLDS, MAX_DISKS, MAX_SERVER_PORTS, MEDIA_SWAP_PRICE, OUTSIDE_TEMP, ENGINEER_HIRE, ROLES, START_BALANCE, TILE_PRICE, UPLINK_TIER, UPTIME_BUCKETS, PLAYER_BLOCK_OCTETS, PUBLIC_BLOCK_UPGRADES, UPLINK_START, MAP_W, MAP_H, MULTIFLOOR_SWITCH_PRICE, ENGINEER_SALARY } from '../balance';
+import { CERT_PRICE, CHASSIS, ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TLDS, MAX_DISKS, MAX_SERVER_PORTS, MEDIA_SWAP_PRICE, OUTSIDE_TEMP, ENGINEER_HIRE, ROLES, START_BALANCE, TILE_PRICE, UPLINK_TIER, UPTIME_BUCKETS, PLAYER_BLOCK_OCTETS, PUBLIC_BLOCK_UPGRADES, UPLINK_START, MAP_W, MAP_H, MULTIFLOOR_SWITCH_PRICE, ENGINEER_SALARY, LEASED_LINE, FAR_PLACES } from '../balance';
 import { freshAchievements } from '../progress';
 import { DEVICE_DEFS, SERVER_PORT_LAYOUT, defOf } from './devices';
 import { inMap, inParking, isIndoor, placementError, starterFloor, tileAt } from './floor';
@@ -414,6 +414,52 @@ export function connect(a: CableEnd, b: CableEnd, type: CableType): CableId | nu
     w.cables[id] = cable;
     w.economy.balance -= price;
     w.economy.totalSpent += price;
+    created = id;
+    runtime.topologyDirty = true;
+  });
+  return created;
+}
+
+/** A cell site or a street of homes across town: off the map, so a leased line instead of a cable. */
+export function buildFarTower(access: AccessKind): DeviceId | null {
+  const s = world.get();
+  const price = ACCESS[access].price + LEASED_LINE.price;
+  if (s.economy.balance < price) { toast(`It costs $${price} with the line: $${ACCESS[access].price} for the site, $${LEASED_LINE.price} to set up the leased line.`, 'error'); return null; }
+  let created: DeviceId | null = null;
+  world.update((w) => {
+    const id = nextId(w, 'dev');
+    const n = Object.values(w.devices).filter((d) => d.kind === 'tower' && d.far).length;
+    const d = defOf('tower').create(id, nextNamed(w, ACCESS[access].namePrefix), { gx: -100 - n * 3, gy: 22 });
+    if (d.kind !== 'tower') return;
+    d.access = access;
+    for (const p of d.ports) p.media = 'fibre';
+    const used = new Set(Object.values(w.devices).flatMap((x) => (x.kind === 'tower' && x.far ? [x.far.place] : [])));
+    const place = FAR_PLACES.find((p) => !used.has(p)) ?? FAR_PLACES[n % FAR_PLACES.length]!;
+    d.far = { place, travelS: 40 + Math.round(random() * 50) };
+    if (d.sw) d.sw.patch = w.staff.release;
+    w.devices[id] = d;
+    w.economy.balance -= price;
+    w.economy.totalSpent += price;
+    created = id;
+    runtime.topologyDirty = true;
+  });
+  return created;
+}
+
+/** Rent the line from a far site to a fibre port in one of your buildings. */
+export function leaseLine(towerId: DeviceId, to: CableEnd): CableId | null {
+  const s = world.get();
+  const t = s.devices[towerId];
+  if (t?.kind !== 'tower' || !t.far) return null;
+  const used = portUsage(s);
+  if (used.has(`${towerId}:0`)) { toast(`${t.name} already has its line.`, 'error'); return null; }
+  if (used.has(`${to.deviceId}:${to.port}`)) { toast('That port already has a cable.', 'error'); return null; }
+  const d = s.devices[to.deviceId];
+  if (d?.ports[to.port]?.media !== 'fibre') { toast('A leased line arrives on fibre: pick a fibre port, or fit a fibre transceiver first.', 'error'); return null; }
+  let created: CableId | null = null;
+  world.update((w) => {
+    const id = nextId(w, 'cab');
+    w.cables[id] = { id, a: { deviceId: towerId, port: 0 }, b: { ...to }, type: 'fibre', bandwidthMbps: LEASED_LINE.mbps, path: [], leased: true };
     created = id;
     runtime.topologyDirty = true;
   });

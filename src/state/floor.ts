@@ -165,7 +165,7 @@ export const cheb = (ax: number, ay: number, bx: number, by: number) => Math.max
 
 /** Is this cell inside some engineer's watch radius? */
 export function watched(s: WorldState, at: GridPos, radius = SIGHT_RADIUS): boolean {
-  return Object.values(s.staff.engineers).some((e) => cheb(Math.round(e.x - 0.5), Math.round(e.y - 0.5), at.gx, at.gy) <= radius);
+  return Object.values(s.staff.engineers).some((e) => !e.away && cheb(Math.round(e.x - 0.5), Math.round(e.y - 0.5), at.gx, at.gy) <= radius);
 }
 
 /** Outside cells on the map edge where strangers can appear. */

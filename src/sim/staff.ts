@@ -136,7 +136,7 @@ function dispatch(s: WorldState, c: RuntimeCache): void {
     const dev = s.devices[job.deviceId];
     if (!dev) { delete s.staff.jobs[job.id]; continue; }
     if (job.retryAt !== undefined && s.time.tick < job.retryAt) continue;
-    const free = Object.values(s.staff.engineers).filter((e) => !e.jobId && e.state !== 'chasing');
+    const free = Object.values(s.staff.engineers).filter((e) => !e.jobId && e.state !== 'chasing' && !e.away);
     if (!free.length) return;
     // remote update from a desk
     if (job.kind === 'update') {
@@ -147,8 +147,10 @@ function dispatch(s: WorldState, c: RuntimeCache): void {
         continue;
       }
     }
-    // hands-on: deskless engineers first, then the nearest
-    const spots = workSpots(s.floor, env(s), 'engineer', dev.gridPos);
+    // hands-on: deskless engineers first, then the nearest; a site across town means a drive from the street
+    const far = dev.kind === 'tower' && !!dev.far;
+    const street = far ? edgeSpawns(s.floor).filter((p) => { const t = tileAt(s.floor, p.gx, p.gy); return t === 'sidewalk' || t === 'street'; }) : [];
+    const spots = far ? (street.length ? street : edgeSpawns(s.floor)) : workSpots(s.floor, env(s), 'engineer', dev.gridPos);
     if (!spots.length) continue;
     const ranked = [...free].sort((a, b) => (a.deskId ? 1 : 0) - (b.deskId ? 1 : 0)
       || cheb(a.x, a.y, dev.gridPos.gx, dev.gridPos.gy) - cheb(b.x, b.y, dev.gridPos.gx, dev.gridPos.gy));
@@ -213,9 +215,29 @@ export function goHome(s: WorldState, e: Engineer): void {
   else e.state = 'idle';
 }
 
+/** Off the map: driving out, working on site, driving back. */
+function awayTick(s: WorldState, e: Engineer, job: Job | undefined): boolean {
+  if (!e.away || e.away === 'work') return false;
+  if (s.time.tick < (e.awayUntil ?? 0)) return true;
+  if (e.away === 'out' && job) { e.away = 'work'; return false; }
+  if (e.away === 'out') { driveBack(s, e); return true; }
+  e.away = undefined;
+  e.state = 'idle';
+  goHome(s, e);
+  return true;
+}
+function driveBack(s: WorldState, e: Engineer): void {
+  const t = e.jobId ? s.devices[s.staff.jobs[e.jobId]?.deviceId ?? ''] : undefined;
+  e.away = 'back';
+  e.state = 'away';
+  e.awayUntil = s.time.tick + Math.round(((t?.kind === 'tower' ? t.far?.travelS : undefined) ?? lastTravel.get(e.id) ?? 60) * TICKS_PER_SEC);
+}
+const lastTravel = new Map<string, number>();
+
 function tickEngineer(s: WorldState, c: RuntimeCache, e: Engineer): void {
   const job = e.jobId ? s.staff.jobs[e.jobId] : undefined;
   if (e.jobId && !job) e.jobId = null;
+  if (awayTick(s, e, job)) return;
 
   if (e.state === 'chasing') {
     const t = e.chaseId ? s.staff.trespassers[e.chaseId] : undefined;
@@ -236,10 +258,19 @@ function tickEngineer(s: WorldState, c: RuntimeCache, e: Engineer): void {
 
   if (job && !job.remote) {
     if (!job.started) {
-      const arrived = step(e, RUSH_SPEED);
+      const arrived = e.away === 'work' || step(e, RUSH_SPEED);
       if (arrived) {
         const dev = s.devices[job.deviceId];
         if (!dev) { cancelJob(s, job.id); return; }
+        if (dev.kind === 'tower' && dev.far && !e.away) {
+          // reached the street: off in the van
+          e.away = 'out';
+          e.state = 'away';
+          lastTravel.set(e.id, dev.far.travelS);
+          e.awayUntil = s.time.tick + Math.round(dev.far.travelS * TICKS_PER_SEC);
+          hooks?.notify(`${e.name} drove off to ${dev.name} in ${dev.far.place}, about ${Math.round(dev.far.travelS)} s away.`, 'info');
+          return;
+        }
         job.started = true;
         job.workLeft = workTicks(job.kind, false, s, job);
         e.state = 'working';
@@ -258,6 +289,7 @@ function tickEngineer(s: WorldState, c: RuntimeCache, e: Engineer): void {
     if (--job.workLeft <= 0) {
       hooks?.finishJob(s, c, job);
       delete s.staff.jobs[job.id];
+      if (e.away === 'work') { driveBack(s, e); e.jobId = null; return; }
       e.jobId = null;
       goHome(s, e);
     }
@@ -325,12 +357,12 @@ export function spawnTrespasser(s: WorldState): string {
 function tickTrespasser(s: WorldState, c: RuntimeCache, t: Trespasser): void {
   // spotted by staff?
   if (!t.spotted && isIndoor(tileAt(s.floor, Math.floor(t.x), Math.floor(t.y)))) {
-    const seer = Object.values(s.staff.engineers).find((e) => Math.hypot(e.x - t.x, e.y - t.y) <= SPOT_RADIUS + (e.traits?.includes('sharpEyes') ? 2 : 0));
+    const seer = Object.values(s.staff.engineers).find((e) => !e.away && Math.hypot(e.x - t.x, e.y - t.y) <= SPOT_RADIUS + (e.traits?.includes('sharpEyes') ? 2 : 0));
     if (seer) {
       t.spotted = true;
       hooks?.notify(`${seer.name} spotted a stranger inside!`, 'warn');
       const chaser = Object.values(s.staff.engineers)
-        .filter((e) => e.state !== 'chasing' && !(e.jobId && s.staff.jobs[e.jobId]?.started && !s.staff.jobs[e.jobId]?.remote))
+        .filter((e) => e.state !== 'chasing' && !e.away && !(e.jobId && s.staff.jobs[e.jobId]?.started && !s.staff.jobs[e.jobId]?.remote))
         .sort((a, b) => Math.hypot(a.x - t.x, a.y - t.y) - Math.hypot(b.x - t.x, b.y - t.y))[0];
       if (chaser) {
         if (chaser.jobId) { const j = s.staff.jobs[chaser.jobId]; if (j) { j.engineerId = null; j.started = false; j.remote = false; } chaser.jobId = null; }
@@ -390,6 +422,8 @@ export function engineerActivity(s: WorldState, e: Engineer): string {
   const dn = j ? s.devices[j.deviceId]?.name ?? '?' : '';
   const verb: Record<JobKind, string> = { preventive: 'preventive maintenance on', full: 'repairing', replace: 'replacing', update: 'patching', reimage: 'reimaging', swap: 'fitting new parts in', upgrade: 'upgrading', inspect: 'checking' };
   if (e.state === 'chasing') return 'chasing a trespasser';
+  if (e.away === 'out') return `driving to ${dn || 'a site across town'}`;
+  if (e.away === 'back') return 'driving back to the office';
   if (j && j.remote) return `${verb[j.kind]} ${dn} remotely`;
   if (j && !j.started) return `rushing to ${dn}`;
   if (j) return `${verb[j.kind]} ${dn}`;
