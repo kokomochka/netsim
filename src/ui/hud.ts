@@ -3,7 +3,7 @@ import { TICKS_PER_SEC } from '../balance';
 import { ACHIEVEMENTS } from '../progress';
 import { uptimePercent } from '../sim/engine';
 import { DEVICE_DEFS } from '../state/devices';
-import { ENGINEER_HIRE, ENGINEER_SALARY } from '../balance';
+import { ENGINEER_HIRE, ENGINEER_SALARY, TRAITS } from '../balance';
 import { engineerActivity, smartDoorsLocked } from '../sim/staff';
 import { addPublicAddr, buyBuilding, buyDomain, dropDomain, editDomain, fireEngineer, hireEngineer, onToast, publicIps, removePublicAddr, runtime, toast, togglePublicService, ui, world, type ToastKind } from '../state/world';
 import { DOMAIN_RENEWAL, REGISTRAR_DNS_FEE, TLDS } from '../balance';
@@ -910,7 +910,7 @@ NsGoals.prototype.renderStaff = function renderStaff(this: NsGoals): void {
   const st = s.staff;
   const intro = document.createElement('p');
   intro.className = 'intro';
-  intro.textContent = `Engineers repair hardware on site and patch software, remotely from a desk when its PC can reach the device. Each costs $${ENGINEER_HIRE} to hire and $${ENGINEER_SALARY}/s in salary.`;
+  intro.textContent = `Engineers fix hardware on site and patch software, remotely from any desk whose PC can reach the device. Hiring through an agency costs $${ENGINEER_HIRE}; pay is around $${ENGINEER_SALARY}/s. Now and then someone walks in asking for a job.`;
   body.appendChild(intro);
   const hire = document.createElement('button');
   hire.textContent = `Hire engineer · $${ENGINEER_HIRE}`;
@@ -924,6 +924,10 @@ NsGoals.prototype.renderStaff = function renderStaff(this: NsGoals): void {
     card.querySelector('b')!.textContent = e.name;
     card.querySelector('.t span')!.textContent = desk ?? 'no desk';
     card.querySelector('.g')!.textContent = engineerActivity(s, e);
+    const tr = document.createElement('p');
+    tr.className = 'rw';
+    tr.textContent = `$${(e.salary ?? ENGINEER_SALARY).toFixed(3)}/s${e.traits?.length ? ' · ' + e.traits.map((t) => `${TRAITS[t]?.label}: ${TRAITS[t]?.blurb}`).join(' · ') : ''}`;
+    card.appendChild(tr);
     const fire = document.createElement('button');
     fire.textContent = 'Let go';
     fire.className = 'ghost';

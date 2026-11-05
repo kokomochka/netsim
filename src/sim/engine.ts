@@ -420,7 +420,7 @@ function economy(state: WorldState): void {
   for (const d of Object.values(state.devices)) if (d.kind === 'tower') rev += towerRevenue(state, d);
   let upkeep = 0;
   for (const d of Object.values(state.devices)) upkeep += upkeepOf(d);
-  upkeep += Object.keys(state.staff.engineers).length * ENGINEER_SALARY;
+  upkeep += Object.values(state.staff.engineers).reduce((a, e) => a + (e.salary ?? ENGINEER_SALARY), 0);
   for (const d of Object.values(state.domains)) upkeep += DOMAIN_RENEWAL + (d.hosting === 'registrar' ? REGISTRAR_DNS_FEE : 0);
   for (const d of Object.values(state.devices)) if (d.kind === 'tower') upkeep += towerPenalty(d);
   state.economy.balance += (rev - upkeep) / TICKS_PER_SEC;
@@ -1036,7 +1036,7 @@ function syncInternalFlows(state: WorldState, cache: RuntimeCache): void {
       const servers = Object.values(state.devices).filter((x) => x.kind === 'server' && x.id !== d.id && !x.compromised);
       const tgt = servers.sort((a, b) => a.id.localeCompare(b.id))[0];
       if (tgt?.kind === 'server') want.set(`lateral:${d.id}`, {
-        kind: 'attack', origin: d.id, srcCidr: 'host', dstIp: tgt.ip, protocol: 'tcp', srcPort: 50002, dstPort: 445,
+        kind: 'attack', origin: d.id, srcCidr: 'host', dstIp: tgt.ip, protocol: 'tcp', srcPort: 50002, dstPort: d.kind === 'desk' ? 22 : 445,
         syn: false, rateMbps: LATERAL_MBPS, serviceId: null, incidentId: `lateral:${d.id}`,
       });
     }
@@ -1128,7 +1128,7 @@ function security(state: WorldState, cache: RuntimeCache): void {
     lateralTicks[f.id] = (lateralTicks[f.id] ?? 0) + 1;
     if (lateralTicks[f.id]! >= LATERAL_SECONDS * TICKS_PER_SEC) {
       const src = state.devices[f.origin];
-      compromise(state, cache, tgt, 'lateral', `infected from ${src?.name ?? 'a hijacked machine'} over SMB (tcp/445)`);
+      compromise(state, cache, tgt, 'lateral', f.dstPort === 22 ? `logged into over SSH from the hijacked ${src?.name ?? 'PC'}` : `infected from ${src?.name ?? 'a hijacked machine'} over SMB (tcp/445)`);
       lateralTicks[f.id] = 0;
     }
   }

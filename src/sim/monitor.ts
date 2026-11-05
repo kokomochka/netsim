@@ -229,7 +229,7 @@ export function noticeTick(s: WorldState, c: RuntimeCache): void {
   const watcher = engineers.find((e) => e.state === 'seated' && e.deskId && c.consoles?.[e.deskId]);
   for (const p of probs) {
     const d = s.devices[p.deviceId]!;
-    const near = engineers.find((e) => cheb(e.x, e.y, d.gridPos.gx + 0.5, d.gridPos.gy + 0.5) <= NOTICE_RADIUS + 0.5);
+    const near = engineers.find((e) => cheb(e.x, e.y, d.gridPos.gx + 0.5, d.gridPos.gy + 0.5) <= NOTICE_RADIUS + 0.5 + (e.traits?.includes('sharpEyes') ? 2 : 0));
     const monitored = !!c.monitored?.[d.id] && !(p.smart && c.monSilent?.[d.id]);
     const k = known[p.key];
     if (!k) {

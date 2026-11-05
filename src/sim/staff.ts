@@ -17,7 +17,7 @@ import {
 import { cheb, edgeSpawns, findPath, isIndoor, tileAt, walkable, watched, workSpots, type Mover, type PathEnv } from '../state/floor';
 import { cellKey } from '../state/geometry';
 import { parseIp } from '../state/ip';
-import type { Device, DeviceId, Engineer, GridPos, Job, JobKind, RuntimeCache, Trespasser, Walker, WorldState } from '../state/types';
+import type { Device, DeviceId, Engineer, GridPos, Job, JobKind, RuntimeCache, Trespasser, Walker, WorldState, Trait } from '../state/types';
 import { buildCtx, l3Ifaces, resolveFromHost, roundTrip, tripOk } from './net';
 import { deskTooHot } from './climate';
 
@@ -91,6 +91,15 @@ export function deskReaches(s: WorldState, c: RuntimeCache, desk: Device, target
 const PRIORITY: Record<JobKind, number> = { reimage: 0, full: 1, replace: 1, swap: 1, preventive: 2, upgrade: 2, inspect: 2, update: 3 };
 
 export function workTicks(kind: JobKind, remote: boolean, s: WorldState, job?: Job): number {
+  const who = job?.engineerId ? s.staff.engineers[job.engineerId] : undefined;
+  const has = (t: Trait) => !!who?.traits?.includes(t);
+  const skill = kind === 'update' ? (remote && has('scripter') ? 0.5 : 1)
+    : kind === 'preventive' ? (has('tidy') ? 0.5 : 1)
+    : kind === 'full' || kind === 'replace' || kind === 'swap' || kind === 'upgrade' ? (has('fastHands') ? 0.5 : 1) : 1;
+  return Math.round(baseWork(kind, remote, s, job) * skill);
+}
+
+function baseWork(kind: JobKind, remote: boolean, s: WorldState, job?: Job): number {
   const sec = kind === 'update' ? (remote ? WORK_SECONDS.updateRemote : WORK_SECONDS.update) * (job && s.devices[job.deviceId]?.updateSrc?.trim() ? 0.5 : 1)
     : kind === 'swap' || kind === 'upgrade' ? (job?.cold ? SWAP_SECONDS.cold : SWAP_SECONDS.hot) * (kind === 'upgrade' ? 1.3 : 1)
     : kind === 'inspect' ? 2 : WORK_SECONDS[kind];
@@ -167,7 +176,8 @@ function assignDesks(s: WorldState, c: RuntimeCache): void {
       hooks?.notify(`${e.name} left ${desk.name}: the room is over ${DESK_MAX_ROOM_C} °C.`, 'warn');
     }
   }
-  const freeDesks = Object.values(s.devices).filter((d) => d.kind === 'desk' && !d.ownerId && !deskTooHot(s, c, d));
+  const freeDesks = Object.values(s.devices).filter((d) => d.kind === 'desk' && !d.ownerId && !deskTooHot(s, c, d))
+    .sort((a, b) => Number(a.kind === 'desk' && !!a.reception) - Number(b.kind === 'desk' && !!b.reception));
   for (const desk of freeDesks) {
     if (desk.kind !== 'desk') continue;
     const e = Object.values(s.staff.engineers).filter((x) => !x.deskId).sort((a, b) => cheb(a.x, a.y, desk.gridPos.gx, desk.gridPos.gy) - cheb(b.x, b.y, desk.gridPos.gx, desk.gridPos.gy))[0];
@@ -267,7 +277,7 @@ function tickEngineer(s: WorldState, c: RuntimeCache, e: Engineer): void {
 
   // no job
   if (e.state === 'walking' || e.state === 'roaming') {
-    if (step(e, e.state === 'walking' ? WALK_SPEED : WALK_SPEED * 0.6)) {
+    if (step(e, (e.state === 'walking' ? WALK_SPEED : WALK_SPEED * 0.6) * (e.traits?.includes('quickFeet') ? 1.25 : 1))) {
       const desk = e.deskId ? s.devices[e.deskId] : undefined;
       if (desk && cellOf(e).gx === desk.gridPos.gx && cellOf(e).gy === desk.gridPos.gy) e.state = 'seated';
       else { e.state = 'idle'; e.idleUntil = s.time.tick + Math.round(rnd(3, 9) * TICKS_PER_SEC); }
@@ -300,7 +310,8 @@ export function spawnTrespasser(s: WorldState): string {
   if (!open.length) return 'A stranger walked past the building, saw staff watching every machine and left.';
   const spawns = edgeSpawns(s.floor);
   if (!spawns.length) return '';
-  const target = open[Math.floor(random() * open.length)]!;
+  const recep = open.filter((d) => d.kind === 'desk' && d.reception);
+  const target = recep.length && random() < 0.45 ? recep[0]! : open[Math.floor(random() * open.length)]!;
   const start = spawns[Math.floor(random() * spawns.length)]!;
   const t: Trespasser = { id: `tre_${s.nextId++}`, x: start.gx + 0.5, y: start.gy + 0.5, path: [], targetId: target.id, state: 'approach', progress: 0, spotted: false };
   const spots = workSpots(s.floor, env(s), 'trespasser', target.gridPos);
@@ -314,7 +325,7 @@ export function spawnTrespasser(s: WorldState): string {
 function tickTrespasser(s: WorldState, c: RuntimeCache, t: Trespasser): void {
   // spotted by staff?
   if (!t.spotted && isIndoor(tileAt(s.floor, Math.floor(t.x), Math.floor(t.y)))) {
-    const seer = Object.values(s.staff.engineers).find((e) => Math.hypot(e.x - t.x, e.y - t.y) <= SPOT_RADIUS);
+    const seer = Object.values(s.staff.engineers).find((e) => Math.hypot(e.x - t.x, e.y - t.y) <= SPOT_RADIUS + (e.traits?.includes('sharpEyes') ? 2 : 0));
     if (seer) {
       t.spotted = true;
       hooks?.notify(`${seer.name} spotted a stranger inside!`, 'warn');

@@ -693,7 +693,13 @@ export interface Engineer extends Walker {
   idleUntil: number;
   chaseId: string | null;
   devOn?: string | null;         // service it is developing while idle at the desk
+  traits?: Trait[];
+  salary?: number;               // $/s
+  homeDeskId?: string | null;    // their own desk while they cover reception
 }
+
+/** Small, realistic strengths. Nothing that bends physics. */
+export type Trait = 'fastHands' | 'scripter' | 'sharpEyes' | 'quickFeet' | 'tidy';
 
 export type JobKind = 'preventive' | 'full' | 'replace' | 'update' | 'reimage' | 'swap' | 'upgrade' | 'inspect';
 

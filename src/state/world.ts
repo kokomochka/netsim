@@ -1,7 +1,7 @@
 // The two stores (saved world + transient UI) and every world mutation. Phase 2.
 import { seeded } from '../rng';
 import { STRIDE, buildingAt, generateCity, levelOf, localY } from './city';
-import { CERT_PRICE, CHASSIS, ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TLDS, MAX_DISKS, MAX_SERVER_PORTS, MEDIA_SWAP_PRICE, OUTSIDE_TEMP, ENGINEER_HIRE, ROLES, START_BALANCE, TILE_PRICE, UPLINK_TIER, UPTIME_BUCKETS, PLAYER_BLOCK_OCTETS, PUBLIC_BLOCK_UPGRADES, UPLINK_START, MAP_W, MAP_H, MULTIFLOOR_SWITCH_PRICE } from '../balance';
+import { CERT_PRICE, CHASSIS, ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TLDS, MAX_DISKS, MAX_SERVER_PORTS, MEDIA_SWAP_PRICE, OUTSIDE_TEMP, ENGINEER_HIRE, ROLES, START_BALANCE, TILE_PRICE, UPLINK_TIER, UPTIME_BUCKETS, PLAYER_BLOCK_OCTETS, PUBLIC_BLOCK_UPGRADES, UPLINK_START, MAP_W, MAP_H, MULTIFLOOR_SWITCH_PRICE, ENGINEER_SALARY } from '../balance';
 import { freshAchievements } from '../progress';
 import { DEVICE_DEFS, SERVER_PORT_LAYOUT, defOf } from './devices';
 import { inMap, inParking, isIndoor, placementError, starterFloor, tileAt } from './floor';
@@ -12,8 +12,7 @@ import { createStore } from './store';
 import type {
   Cable, CableEnd, CableId, CableType, Device, DeviceId, DeviceKind,
   AccessKind, DiskType, RaidLevel, Domain, Economy, Engineer, Media, ServerRole, GridPos, PartSlot, RoleKind, Rotation, RuntimeCache, ServerParts, Staff, Stats, Tile,
-  Unlocks, UplinkTier, WorldState,
-} from './types';
+  Unlocks, UplinkTier, WorldState, Trait } from './types';
 import { formatIp, parseCidr, parseIp } from './ip';
 
 export const SCHEMA_VERSION = 13;
@@ -146,6 +145,9 @@ export function newWorld(legacy = testFlags.legacyMap): WorldState {
   return s;
 }
 
+const FIRST = ['Ada', 'Linus', 'Grace', 'Ken', 'Radia', 'Vint', 'Barbara', 'Dennis', 'Hedy', 'Margaret', 'Frances', 'Sophie', 'Alan', 'Priya', 'Mateo', 'Yuki', 'Amara', 'Lars', 'Noor', 'Tomás', 'Ines', 'Kofi', 'Mei', 'Oskar', 'Leila', 'Ravi', 'Zofia', 'Diego', 'Aiko', 'Femi', 'Hana', 'Jonas', 'Elif', 'Marek', 'Sana', 'Theo', 'Nadia', 'Bo', 'Carmen', 'Idris'];
+const LAST = ['Novak', 'Okafor', 'Lindqvist', 'Moreau', 'Tanaka', 'Silva', 'Kowalski', 'Haddad', 'Brennan', 'Iyer', 'Petrov', 'Nakamura', 'Fischer', 'Mensah', 'Rossi', 'Varga', 'Larsen', 'Duarte', 'Kim', 'Abebe'];
+const TRAIT_KEYS: Trait[] = ['fastHands', 'scripter', 'sharpEyes', 'quickFeet', 'tidy'];
 export const world = createStore<WorldState>(newWorld());
 export const ui = createStore<UiState>({
   level: 0,
@@ -918,12 +920,28 @@ export function paintTile(x: number, y: number, tile: Tile): string | null {
 
 // ---------- staff ----------
 
-function firstNames(): string[] { return ['Ada', 'Linus', 'Grace', 'Ken', 'Radia', 'Vint', 'Barbara', 'Dennis', 'Hedy', 'Jon', 'Margaret', 'Tim', 'Frances', 'Bjarne', 'Sophie', 'Alan']; }
 
-export function makeEngineer(s: WorldState, x: number, y: number): Engineer {
-  const used = new Set(Object.values(s.staff.engineers).map((e) => e.name));
-  const name = firstNames().find((n) => !used.has(n)) ?? `Engineer ${Object.keys(s.staff.engineers).length + 1}`;
-  return { id: `eng_${s.nextId++}`, name, x, y, path: [], state: 'idle', deskId: null, jobId: null, idleUntil: 0, chaseId: null };
+/** A new engineer: a name nobody on staff has, and the traits and pay given (or a mild random pair). */
+export function makeEngineer(s: WorldState, x: number, y: number, opts: { traits?: Trait[]; salary?: number; name?: string } = {}): Engineer {
+  const r = seeded((s.meta.seed ^ 0x5eed5) + s.nextId * 7919);
+  const used = new Set(Object.values(s.staff.engineers).map((e) => e.name.split(' ')[0]));
+  let name = opts.name;
+  for (let i = 0; !name && i < 60; i++) { const f = FIRST[Math.floor(r() * FIRST.length)]!; if (!used.has(f)) name = f; }
+  name ??= `Engineer ${Object.keys(s.staff.engineers).length + 1}`;
+  const traits = opts.traits ?? (r() < 0.5 ? [TRAIT_KEYS[Math.floor(r() * TRAIT_KEYS.length)]!] : []);
+  const salary = opts.salary ?? Math.round(ENGINEER_SALARY * (0.9 + r() * 0.2) * 1000) / 1000;
+  return { id: `eng_${s.nextId++}`, name, x, y, path: [], state: 'idle', deskId: null, jobId: null, idleUntil: 0, chaseId: null, traits, salary };
+}
+
+/** Someone asking for a job at reception: either cheap, or strong and pricey. */
+export function applicantOffer(s: WorldState): { name: string; traits: Trait[]; salary: number; pitch: string } {
+  const r = seeded((s.meta.seed ^ 0xa991) + s.time.tick);
+  const cheap = r() < 0.5;
+  const pickTraits = (n: number) => { const pool = [...TRAIT_KEYS]; const out: Trait[] = []; while (out.length < n && pool.length) out.push(pool.splice(Math.floor(r() * pool.length), 1)[0]!); return out; };
+  const first = FIRST[Math.floor(r() * FIRST.length)]!, last = LAST[Math.floor(r() * LAST.length)]!;
+  return cheap
+    ? { name: `${first} ${last}`, traits: [], salary: Math.round(ENGINEER_SALARY * (0.55 + r() * 0.1) * 1000) / 1000, pitch: 'Fresh out of school, happy to learn. Asks for little.' }
+    : { name: `${first} ${last}`, traits: pickTraits(2), salary: Math.round(ENGINEER_SALARY * (1.7 + r() * 0.5) * 1000) / 1000, pitch: 'Ten years in data centres. Knows their stuff, and knows what it is worth.' };
 }
 
 export function hireEngineer(): string | null {

@@ -234,6 +234,13 @@ export const SIGHT_RADIUS = 2;             // cells an engineer watches around t
 export const SPOT_RADIUS = 5;              // cells at which an engineer notices a stranger
 export const TILE_PRICE: Record<Tile, number> = { ground: 0, floor: 2, raised: 6, wall: 8, door: 40, smartdoor: 150, vent: 60, xwall: 0, lift: 0, street: 0, sidewalk: 0, void: 0 };
 export const MULTIFLOOR_SWITCH_PRICE = 140;
+export const TRAITS: Record<string, { label: string; blurb: string }> = {
+  fastHands: { label: 'Fast hands', blurb: 'repairs and part swaps take half the time' },
+  scripter: { label: 'Scripter', blurb: 'remote updates take half the time' },
+  sharpEyes: { label: 'Sharp eyes', blurb: 'notices problems and strangers from further away' },
+  quickFeet: { label: 'Quick on their feet', blurb: 'walks a quarter faster' },
+  tidy: { label: 'Tidy', blurb: 'preventive maintenance takes half the time' },
+};
 /** Unencrypted traffic crossing your internet lines gets read now and then. */
 export const MITM_MEAN_S = 420;
 export const PLAINTEXT_PORTS = new Set([21, 23, 25, 80, 110, 143, 161, 389, 445, 3260, 7000, 7001, 8080, 10050]);   // per floor it spans
