@@ -8,6 +8,7 @@ import { pointer, runtime, ui, world, deviceAtCell } from '../state/world';
 import { doorStates, smartDoorsLocked } from '../sim/staff';
 import { inParking, isIndoor, isPath, placementError, tileAt } from '../state/floor';
 import { flowShape } from '../sim/net';
+import { layoutCables } from './cablelayout';
 import { clearIconCache, deviceContext } from './icons';
 import { CABLE_COLOR, COLORS, KIND_COLOR } from './palette';
 
@@ -627,6 +628,7 @@ export class Renderer {
   }
 
   private lastCableDraw = 0;
+  private cableDisplay = new Map<string, Vec2[]>();
 
   /** Cables coloured by type, shifted toward red as load passes 70 % of capacity. */
   private drawCables(): void {
@@ -639,9 +641,11 @@ export class Renderer {
       const d = s.devices[e.deviceId];
       return !d || !d.ports[e.port]?.up || d.health.state === 'failed';
     });
+    // spread shared runs into lanes and hop over crossings (display only)
+    this.cableDisplay = layoutCables(Object.values(s.cables));
     for (const c of Object.values(s.cables)) {
       if (c.path.length < 2) continue;
-      const pts = c.path;
+      const pts = this.cableDisplay.get(c.id) ?? c.path;
       const trace = () => {
         cg.moveTo(pts[0]!.x, pts[0]!.y);
         for (let i = 1; i < pts.length; i++) cg.lineTo(pts[i]!.x, pts[i]!.y);
@@ -734,7 +738,8 @@ export class Renderer {
       let kind: FlowKind = 'http', best = -1;
       if (e.byKind.has('attack')) kind = 'attack';
       else for (const [k, v] of e.byKind) if (v > best) { kind = k; best = v; }
-      let pts = e.cable.a.deviceId === e.from ? e.cable.path : [...e.cable.path].reverse();
+      const shown = this.cableDisplay.get(e.cable.id) ?? e.cable.path;
+      let pts = e.cable.a.deviceId === e.from ? shown : [...shown].reverse();
       if (both.has(e.cable.id)) pts = offsetPath(pts, 2.2);
       this.streams.push({ pts, mbps: e.mbps, color: this.kindColor(kind), attack: kind === 'attack' });
     }
