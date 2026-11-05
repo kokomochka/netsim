@@ -110,6 +110,12 @@ export interface Route {
 }
 
 /** Static one-to-one NAT (Cisco "static (inside,outside)" / iptables DNAT+SNAT). */
+/** A site-to-site VPN on a firewall: traffic for `remote` is encrypted to `peer`. */
+export interface Vpn { id: string; peer: string; local: string; remote: string; key: string; enabled: boolean }
+
+/** Somebody else's office out in the world (a customer): reachable only through a VPN. */
+export interface RemoteSite { id: string; name: string; publicIp: string; net: string; key: string }
+
 /** Dynamic source NAT: inside sources leaving through one port take that port's address. */
 export interface PatRule { id: string; src: string; outPort: number }
 
@@ -364,6 +370,7 @@ export interface FirewallDevice extends DeviceBase {
   kind: 'firewall';
   interfaces: FirewallInterface[];
   rules: FirewallRule[];
+  vpns?: Vpn[];
   defaultPolicy: FwAction;
   routes: Route[];
   nat: NatEntry[];
@@ -584,6 +591,10 @@ export interface ResolvedPath {
   /** addresses as the destination saw them (after NAT): who to answer, and from where */
   srcSeen?: number;
   dstSeen?: number;
+  /** went through a VPN tunnel (encrypted on the way) */
+  viaTunnel?: boolean;
+  /** ended at a remote site through a VPN */
+  reachedSite?: string;
 }
 
 export interface Carrier {
@@ -627,6 +638,7 @@ export interface RuntimeCache {
   monitored?: Record<DeviceId, string>;          // device → master that hears from it
   consoles?: Record<DeviceId, DeviceId>;         // desk → master whose web console it can open
   monWhy?: Record<DeviceId, string>;             // why a device is not monitored
+  vpnUp?: Record<string, { up: boolean; why: string; peerFw?: DeviceId; site?: string }>;   // `${fwId}:${vpnId}`
   monSeen?: Record<DeviceId, string>;           // device → master that has had an answer from it since load
   monSilent?: Record<DeviceId, true>;           // answered before, not now: the master raises an alert
   monTargets?: Record<string, { ok: boolean; msg: string }>;   // `${masterId}:${targetId}` → last poll
@@ -776,6 +788,7 @@ export interface WorldState {
   achievements: Record<AchievementId, AchievementState>;
   floor: Floor;
   buildings: Record<string, Building>;
+  sites?: Record<string, RemoteSite>;
   staff: Staff;
   climate: Climate;
   domains: Record<string, Domain>;

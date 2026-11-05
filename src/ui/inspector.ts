@@ -114,6 +114,9 @@ const INSPECTOR_CSS = `
   .vlan-row { grid-template-columns: 76px 92px minmax(0, 1fr); }
   .subif-row { grid-template-columns: minmax(0, 1fr) 90px 28px; }
   .subif-row2 { grid-template-columns: minmax(0, 1fr) 70px; }
+  .vpn-row { grid-template-columns: minmax(0, 1fr) auto 28px; }
+  .vpn-row2 { grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr); }
+  .vpn-row2 .arrow { color: var(--ink-faint); text-align: center; }
   .mt-row { grid-template-columns: minmax(0, 1fr) 150px 28px; }
   .px-card { gap: 6px; }
   .px-head { grid-template-columns: minmax(0, 1fr) 28px; }
@@ -724,7 +727,7 @@ export class NsInspector extends HTMLElement {
       const info2 = UPLINK_TIER[t];
       const locked = t === 'carrier' && !s.unlocks.carrierUplink;
       const b = btn(`${info2.label} · ${mbps(info2.bandwidthMbps)} · ${info2.costPerSec ? `$${info2.costPerSec}/s` : 'free'}`, () => {
-        const err = setUplinkTier(t);
+        const err = setUplinkTier(t, d.id);
         if (err) toast(err, 'error'); else toast(`Uplink set to ${info2.label}.`);
       });
       b.setAttribute('aria-pressed', String(d.uplinkTier === t));
@@ -1522,6 +1525,37 @@ export class NsInspector extends HTMLElement {
     return sec;
   }
 
+  /** Site-to-site VPNs: encrypted tunnels to your other buildings or to customers. */
+  private vpnSection(s: WorldState, d: DeviceOf<'firewall'>): HTMLElement {
+    const vpns = d.vpns ?? [];
+    const sec = section(heading('Site-to-site VPN', vpns.length ? this.liveText(() => `${vpns.filter((v) => runtime.vpnUp?.[`${d.id}:${v.id}`]?.up).length} of ${vpns.length} up`) : 'none'));
+    sec.appendChild(el('p', 'note', 'An encrypted tunnel across the internet: traffic for the remote network goes into it here and comes out at the other end. Both ends need each other\'s public address, the same key, and the networks the other way round. The peer must reach this firewall on UDP 500 and 4500.'));
+    const edit = (fn: (x: DeviceOf<'firewall'>) => void) => editDevice(d.id, 'firewall', fn);
+    vpns.forEach((v, i) => {
+      const upd = (fn: (y: NonNullable<typeof d.vpns>[number]) => void) => edit((x) => { const y = x.vpns?.[i]; if (y) fn(y); });
+      const card = el('div', 'card');
+      const r1 = el('div', 'row vpn-row');
+      r1.appendChild(makeInput(`vpn-${v.id}-peer`, v.peer, { placeholder: 'peer public IP', ariaLabel: 'Peer public IP', check: v.peer ? checkIp(v.peer, '') : null, onCommit: (t) => upd((y) => { y.peer = t.trim(); }) }));
+      r1.appendChild(makeCheck(`vpn-${v.id}-on`, ' on', v.enabled, (on) => upd((y) => { y.enabled = on; })));
+      r1.appendChild(btn('✕', () => edit((x) => { x.vpns?.splice(i, 1); }), 'icon-btn danger', 'Remove VPN'));
+      card.appendChild(r1);
+      const r2 = el('div', 'row vpn-row2');
+      r2.appendChild(makeInput(`vpn-${v.id}-l`, v.local, { placeholder: 'your network, 192.168.10.0/24', ariaLabel: 'Local network', check: v.local ? checkCidr(v.local, false) : null, onCommit: (t) => upd((y) => { y.local = t.trim(); }) }));
+      r2.appendChild(el('span', 'arrow', '⇄'));
+      r2.appendChild(makeInput(`vpn-${v.id}-r`, v.remote, { placeholder: 'their network', ariaLabel: 'Remote network', check: v.remote ? checkCidr(v.remote, false) : null, onCommit: (t) => upd((y) => { y.remote = t.trim(); }) }));
+      card.appendChild(r2);
+      card.appendChild(makeInput(`vpn-${v.id}-k`, v.key, { placeholder: 'shared key', ariaLabel: 'Shared key', onCommit: (t) => upd((y) => { y.key = t; }) }));
+      card.appendChild(this.liveBlock(() => {
+        const st = runtime.vpnUp?.[`${d.id}:${v.id}`];
+        return el('div', `explain ${st?.up ? 'ok' : 'bad'}`, st ? st.why : 'Checking…');
+      }));
+      sec.appendChild(card);
+    });
+    sec.appendChild(btn('+ Add VPN', () => edit((x) => { (x.vpns ??= []).push({ id: genId('vpn'), peer: '', local: '', remote: '', key: '', enabled: true }); }), 'add'));
+    void s;
+    return sec;
+  }
+
   /** Router-on-a-stick: one port, several VLANs, an address in each. */
   private subifSection(s: WorldState, d: DeviceOf<'router'> | DeviceOf<'firewall'>): HTMLElement {
     const subs = d.subifs ?? [];
@@ -1673,7 +1707,7 @@ export class NsInspector extends HTMLElement {
     polSec.appendChild(seg);
     polSec.appendChild(el('p', 'note', 'Applies to low → high security traffic that no rule matched. Real firewalls default to deny.'));
 
-    return [ifSec, this.subifSection(s, d), rulesSec, polSec, this.natSection(d), this.routesSection(d), this.talkersSection(d)];
+    return [ifSec, this.subifSection(s, d), rulesSec, polSec, this.natSection(d), this.routesSection(d), this.vpnSection(s, d), this.talkersSection(d)];
   }
 
   private scrubberBody(d: DeviceOf<'ddos_scrubber'>): HTMLElement[] {

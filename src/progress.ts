@@ -248,7 +248,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
         const p = c.paths[f.id];
         const o = s.devices[f.origin];
         const ip = o && 'ip' in o ? o.ip : '';
-        return !!p && !p.blocked && p.reachedServer === up.id && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip);
+        return !!p && !p.blocked && s.devices[p.reachedServer ?? '']?.kind === 'uplink' && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip);
       }) ? 1 : 0;
     },
   },

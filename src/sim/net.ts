@@ -14,6 +14,7 @@
 //     route or an un-NATed private source breaks the service.
 
 import { MGMT_PORT, MON_AGENT_PORT, ROLES, SNMP_PORT, FLOW_SHAPE } from '../balance';
+import { STRIDE as STRIDE_NET } from '../state/city';
 import { formatCidr, formatIp, inCidr, isAny, parseCidr, parseIp, parsePortRange, prefixToMask, subnetOf, type Cidr } from '../state/ip';
 import type {
   BlockReason, Cable, CableId, DdosScrubberDevice, Device, DeviceId, FirewallDevice, FirewallInterface,
@@ -32,6 +33,7 @@ export interface NetCtx {
   standbyFor: Map<DeviceId, DeviceId>;
   stpBlocked: Record<CableId, DeviceId>;
   storm: Record<DeviceId, true>;
+  vpnUp: NonNullable<RuntimeCache['vpnUp']>;
 }
 
 export function buildCtx(s: WorldState, cache: RuntimeCache): NetCtx {
@@ -42,7 +44,7 @@ export function buildCtx(s: WorldState, cache: RuntimeCache): NetCtx {
   }
   const standbyFor = new Map<DeviceId, DeviceId>();
   for (const [primary, standby] of Object.entries(cache.takeover ?? {})) standbyFor.set(standby, primary);
-  return { s, links, learned: cache.learned, standbyFor, stpBlocked: cache.stpBlocked ?? {}, storm: cache.storm ?? {} };
+  return { s, links, learned: cache.learned, standbyFor, stpBlocked: cache.stpBlocked ?? {}, storm: cache.storm ?? {}, vpnUp: cache.vpnUp ?? {} };
 }
 
 const isL2 = (d: Device) => d.kind === 'switch' || d.kind === 'ddos_scrubber';
@@ -510,6 +512,15 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
             h.note = `drops it: source ${ipStr(pkt.src)} is not one of your public addresses`;
             return b.block('bogon_src', `Traffic reached the ISP with private source ${ipStr(pkt.src)}. Add a static NAT entry for it on your edge device${ctx.s.unlocks.dynamicNat ? ', or a dynamic NAT rule for its network' : ''}, or give it a public IP.`);
           }
+          const other = uplinkFor(ctx.s, pkt.dst);
+          if (other && other.id !== d.id) {
+            // another of your buildings: across the internet and in through its own line
+            b.p.resources.push(`dev:${d.id}`, `dev:${other.id}`);
+            h.note = `carries it across the internet to ${other.name}`;
+            h.outPort = null;
+            b.hop({ deviceId: other.id, inPort: null, outPort: 0, note: `ISP delivers it to ${ipStr(pkt.dst)}` });
+            return routeOnward(ctx, b, other, 0, pkt.dst, pkt);
+          }
           b.p.reachedServer = d.id;
           b.p.srcSeen = pkt.src;
           b.p.resources.push(`dev:${d.id}`);
@@ -555,6 +566,14 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
         }
         // is it for this box?
         if (l3Ifaces(ctx, d).some((i) => i.ip === pkt.dst)) {
+          if (d.kind === 'firewall' && pkt.dir === 'fwd' && pkt.proto === 'udp' && (pkt.dport === 500 || pkt.dport === 4500)) {
+            const v = (d.vpns ?? []).find((x) => x.enabled && parseIp(x.peer) === pkt.src);
+            if (v) {
+              h.note = [...notes, `accepts IKE from its VPN peer ${v.peer}`].join(' · ');
+              b.p.reachedServer = d.id; b.p.srcSeen = pkt.src; b.p.dstSeen = pkt.dst;
+              return b.ok(`${d.name} answers its VPN peer.`);
+            }
+          }
           if (pkt.dir === 'ret') {
             // the answer to a connection the box opened itself (firmware download)
             h.note = [...notes, 'receives the reply'].join(' · ');
@@ -570,6 +589,33 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
           }
           h.note = [...notes, 'traffic is addressed to the device itself'].join(' · ');
           return b.block('port_closed', `${d.name} owns ${ipStr(pkt.dst)} but runs no website. Add a static NAT entry that maps it to your server.`);
+        }
+        // a VPN that covers the destination: encrypt and send it to the peer
+        if (d.kind === 'firewall') {
+          const tun = (d.vpns ?? []).find((v) => v.enabled && ctx.vpnUp[`${d.id}:${v.id}`]?.up && (() => { const c = parseCidr(v.remote); return !!c && inCidr(pkt.dst, c); })());
+          if (tun) {
+            const st = ctx.vpnUp[`${d.id}:${tun.id}`]!;
+            b.p.viaTunnel = true;
+            const myUp = uplinkOfDevice(ctx.s, d.id);
+            if (myUp) b.p.resources.push(`dev:${myUp}`);
+            if (st.site) {
+              const site = ctx.s.sites?.[st.site];
+              h.note = [...notes, `encrypts it into the VPN to ${site?.name ?? tun.peer}`].join(' · ');
+              b.p.reachedSite = st.site;
+              return b.ok(`Delivered through the VPN to ${site?.name ?? tun.peer}.`);
+            }
+            const pf = st.peerFw ? ctx.s.devices[st.peerFw] : undefined;
+            if (!pf || (pf.kind !== 'firewall')) return b.block('no_route', `${d.name}'s VPN peer is gone.`);
+            const peerUp = uplinkOfDevice(ctx.s, pf.id);
+            if (peerUp) b.p.resources.push(`dev:${peerUp}`);
+            h.note = [...notes, `encrypts it into the VPN to ${pf.name}`].join(' · ');
+            const rt2 = lookupRoute(ctx, pf, pkt.dst);
+            const h2 = b.hop({ deviceId: pf.id, inPort: null, outPort: rt2?.port ?? null, note: rt2 ? `decrypts it from the VPN · ${rt2.desc}` : 'decrypts it from the VPN' });
+            b.p.resources.push(`dev:${pf.id}`);
+            if (!rt2) { h2.note += ` · no route to ${ipStr(pkt.dst)}`; return b.block('no_route', `${pf.name} has no route to ${ipStr(pkt.dst)} behind the VPN.`); }
+            cur = pf; port = rt2.port; tag = rt2.vlan; nh = rt2.nextHop ?? pkt.dst;
+            continue;
+          }
         }
         const rt = lookupRoute(ctx, d, pkt.dst);
         if (!rt) {
@@ -615,7 +661,7 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
 /** Inbound request from the internet toward a public IP. */
 export function resolveInbound(ctx: NetCtx, pkt: Pkt): ResolvedPath {
   const b = new PathBuilder();
-  const up = Object.values(ctx.s.devices).find((d) => d.kind === 'uplink');
+  const up = uplinkFor(ctx.s, pkt.dst) ?? Object.values(ctx.s.devices).find((d) => d.kind === 'uplink');
   if (!up || up.kind !== 'uplink') return b.block('link_down', 'No uplink.');
   const h = b.hop({ deviceId: up.id, inPort: null, outPort: 0, note: `ISP receives ${pktDesc(pkt)}` });
   if (ctx.s.unlocks.upstreamFiltering) {
@@ -751,6 +797,47 @@ export function flowShape(s: WorldState, f: Flow): { req: number; resp: number }
     case 'control': return /^(fetch|mirror|fwdproxy):/.test(f.tag ?? '') ? FLOW_SHAPE.download : FLOW_SHAPE.even;
     default: return FLOW_SHAPE.even;
   }
+}
+
+/** The uplink whose public block holds this address. */
+export function uplinkFor(s: WorldState, ip: number): Device | undefined {
+  return Object.values(s.devices).find((u) => u.kind === 'uplink' && (() => { const c = parseCidr(u.publicSubnet); return !!c && inCidr(ip, c); })());
+}
+
+/** The uplink of the building a device stands in. */
+export function uplinkOfDevice(s: WorldState, id: DeviceId): DeviceId | null {
+  const d = s.devices[id];
+  if (!d) return null;
+  const b = Object.values(s.buildings ?? {}).find((x) => x.rects.some((q) => d.gridPos.gx >= q.x0 && d.gridPos.gx <= q.x1 && (d.gridPos.gy % (STRIDE_NET)) >= q.y0 && (d.gridPos.gy % (STRIDE_NET)) <= q.y1));
+  return b?.uplinkId ?? (Object.values(s.devices).find((u) => u.kind === 'uplink')?.id ?? null);
+}
+
+/** Traffic from a remote site's network into yours, decrypted at the firewall that terminates its VPN. */
+export function resolveFromSite(ctx: NetCtx, siteId: string, dst: number, proto: Pkt['proto'], dport: number, mbps = 0): ResolvedPath {
+  const b = new PathBuilder();
+  const site = ctx.s.sites?.[siteId];
+  const entry = Object.entries(ctx.vpnUp).find(([, v]) => v.up && v.site === siteId);
+  if (!site || !entry) return b.block('no_route', site ? `No VPN to ${site.name} is up.` : 'Unknown site.');
+  const fw = ctx.s.devices[entry[0].split(':')[0]!];
+  if (!fw || fw.kind !== 'firewall') return b.block('no_route', 'The VPN firewall is gone.');
+  const net = parseCidr(site.net);
+  const src = net ? (net.net + 10) >>> 0 : 0;
+  const pkt: Pkt = { src, srcAny: false, dst, proto, sport: 50000, dport, syn: false, mbps, dir: 'fwd' };
+  const rt = lookupRoute(ctx, fw, dst);
+  const myUp = uplinkOfDevice(ctx.s, fw.id);
+  if (myUp) b.p.resources.push(`dev:${myUp}`);
+  b.p.viaTunnel = true;
+  b.hop({ deviceId: fw.id, inPort: null, outPort: rt?.port ?? null, note: `decrypts ${site.name}'s traffic from the VPN${rt ? ` · ${rt.desc}` : ''}` });
+  if (!rt) return b.block('no_route', `${fw.name} has no route to ${ipStr(dst)}.`);
+  const p = routeOnward(ctx, b, fw, rt.port, rt.nextHop ?? dst, pkt, rt.vlan);
+  if (!p.blocked && p.reachedServer) {
+    const dev = ctx.s.devices[p.reachedServer];
+    if (dev && (dev.kind === 'server' || dev.kind === 'desk' || dev.kind === 'tower' || dev.kind === 'badge')) {
+      p.ret = resolveFromHost(ctx, dev, src, proto, dport, 'ret', 0, p.dstSeen ?? dst);
+      if (p.ret.blocked) p.explain = `${site.name} reaches it, but the reply fails: ${p.ret.explain}`;
+    }
+  }
+  return p;
 }
 
 /** RFC 1918 and carrier-grade NAT space: never routed on the internet. */

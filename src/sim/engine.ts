@@ -11,19 +11,19 @@ import {
   REPUTATION_OUTAGE_HIT, ROUTER_CAPACITY_MBPS, SITE_MBPS, SITE_REVENUE, SWITCH_CAPACITY_MBPS, TICKS_PER_SEC,
   UPLINK_TIER, UPTIME_BUCKETS, DISK_TYPES, ENGINEER_SALARY, GPU_REVENUE, INTRUSION_CHECK_S, LATERAL_MBPS,
   ACCESS, AI_MBPS, CLOUD_BASE_MBPS, INTERNET_IP, DNS_MBPS, DNS_REVENUE, DOMAIN_RENEWAL, NAMED_DEMAND_BONUS, REGISTRAR_DNS_FEE, CLOUD_GROWTH_GB_PER_S, CLOUD_PAY_PER_GB, FRONTEND_LINK_MBPS, GPU_LINK_MBPS,
-  LATERAL_SECONDS, PATCH_FIRST_TICK, TRANSIT_DST, DEV_BUG_CHANCE, DEV_BUG_WINDOW_S, DEV_MAX_QUALITY, DEV_QUALITY_STEP, DEV_SECONDS_PER_RELEASE, PATCH_INTERVAL_S, ROLES, TRESPASS_FIRST_TICK, TRESPASS_INTERVAL_S, VULNERABLE_AFTER_S, PATCH_FETCH_MBPS, MIRROR_FETCH_S, MIRROR_FETCH_MBPS, DEMAND_SOFT_CAP } from '../balance';
+  LATERAL_SECONDS, PATCH_FIRST_TICK, TRANSIT_DST, DEV_BUG_CHANCE, DEV_BUG_WINDOW_S, DEV_MAX_QUALITY, DEV_QUALITY_STEP, DEV_SECONDS_PER_RELEASE, PATCH_INTERVAL_S, ROLES, TRESPASS_FIRST_TICK, TRESPASS_INTERVAL_S, VULNERABLE_AFTER_S, PATCH_FETCH_MBPS, MIRROR_FETCH_S, MIRROR_FETCH_MBPS, DEMAND_SOFT_CAP, MITM_MEAN_S, PLAINTEXT_PORTS } from '../balance';
 import { carryComps, diskPrice, freshComps, roleUse, serverCaps, serverPrice, serverUpkeep, specsFor, wipesArray } from '../state/hardware';
 import { compName, effTflops, failedComps, hwFastTick, serverDown, setHwHooks, syncHealth } from './hw';
 import { knownProblems, monitorFlows, noticeTick, setMonitorHooks } from './monitor';
 import { PLAYER_BLOCK_OCTETS } from '../balance';
 import { backendPort, flowShape, roundTrip, tripOk } from './net';
+import { refreshVpns } from './vpn';
 import { cancelJob, compromise, createJob, deskReaches, setStaffHooks, spawnTrespasser, staffTick } from './staff';
 import { checkAchievements } from '../progress';
 import { parseIp } from '../state/ip';
 import type {
   AttackType, Component, Device, DeviceId, FaultMode, Flow, Incident, Job, RuntimeCache, ServerDevice, ServerParts, Service,
-  TalkerRow, WorldState,
-} from '../state/types';
+  TalkerRow, WorldState, ResolvedPath } from '../state/types';
 import { buildCtx, pathMatches, REASON_LABEL, resolveFlow, resolveFromHost, runDhcp, runOspf, runStp } from './net';
 import { climateTick, setClimateHooks } from './climate';
 import { refreshNames, servedOk } from './dns';
@@ -58,6 +58,7 @@ export function tick(state: WorldState, cache: RuntimeCache): void {
     if (state.time.tick % 10 === 0) failover(state, cache);
     if (state.time.tick % 20 === 1) refreshRoleLinks(state, cache);
     if (state.time.tick % 20 === 2 || cache.topologyDirty) refreshNames(state, cache);
+    if (state.time.tick % 20 === 3 || cache.topologyDirty) refreshVpns(state, cache);
     if (cache.topologyDirty || --resolveCountdown <= 0) {
       resolveAll(state, cache);
       resolveCountdown = TICKS_PER_SEC;
@@ -75,6 +76,7 @@ export function tick(state: WorldState, cache: RuntimeCache): void {
     if (state.time.tick % TICKS_PER_SEC === 7) backupStamp(state, cache);
     if (state.time.tick % TICKS_PER_SEC === 0) devWork(state, cache);
     if (state.time.tick % 20 === 0) autoJobs(state);
+    if (state.time.tick % TICKS_PER_SEC === 11) eavesdrop(state, cache);
     security(state, cache);
     stats(state, cache);
     if (state.time.tick % 10 === 0) checkAchievements(state, cache);
@@ -323,8 +325,8 @@ function applyLoad(state: WorldState, cache: RuntimeCache): void {
     d.usage.cpu = d.usage.bandwidth;
     d.usage.ram = d.usage.bandwidth * 0.5;
   }
-  const up = Object.values(state.devices).find((d) => d.kind === 'uplink');
-  cache.uplinkMbps = up ? load.get(`dev:${up.id}`) ?? 0 : 0;   // offered to the line
+  // offered to all your lines together
+  cache.uplinkMbps = Object.values(state.devices).filter((d) => d.kind === 'uplink').reduce((a, u) => a + (load.get(`dev:${u.id}`) ?? 0), 0);
 }
 
 /** Per-resource load of a server: CPU, memory, disk array, network card, GPU. */
@@ -465,9 +467,8 @@ function towerAvailability(state: WorldState, cache: RuntimeCache): void {
     if (d.kind !== 'tower') continue;
     const sb = d.subs;
     const p = sb.flowId ? cache.paths[sb.flowId] : undefined;
-    const up = Object.values(state.devices).find((x) => x.kind === 'uplink');
     let a = 0;
-    if (up && tripOk(p, up.id) && !d.compromised && !isOffline(d)) a = cache.delivery[sb.flowId!] ?? 1;
+    if (p && tripOk(p) && state.devices[p.reachedServer ?? '']?.kind === 'uplink' && !d.compromised && !isOffline(d)) a = cache.delivery[sb.flowId!] ?? 1;
     sb.availability = a;
     if (a >= 0.5) sb.live = true;
     if (a >= 0.99) { sb.upTicks++; sb.reputation = Math.min(2.5, sb.reputation + REPUTATION_GAIN_PER_MIN / MINUTE); }
@@ -985,6 +986,28 @@ function mirrorTick(state: WorldState, cache: RuntimeCache): void {
     r.fetchLeft = undefined;
     addLog(state, d.id, `${d.name}: downloaded release #${rel}; devices that use it as update source can patch`, 'info');
   }
+}
+
+/** Plain-text traffic over the internet gets read now and then: a fine, and a hint to encrypt. */
+function eavesdrop(state: WorldState, cache: RuntimeCache): void {
+  if (random() >= 1 / MITM_MEAN_S) return;
+  const crosses = (p: ResolvedPath | null | undefined) => !!p && p.hops.some((h) => state.devices[h.deviceId]?.kind === 'uplink');
+  const exposed = Object.values(state.flows).filter((f) => {
+    const p = cache.paths[f.id];
+    if (!p || p.blocked || p.viaTunnel || f.kind === 'attack' || f.kind === 'probe') return false;
+    if (!PLAINTEXT_PORTS.has(f.dstPort)) return false;
+    return crosses(p) || crosses(p.ret);
+  });
+  if (!exposed.length) return;
+  const f = exposed[Math.floor(random() * exposed.length)]!;
+  const fine = Math.round(30 + Math.min(300, f.rateMbps * 3));
+  state.economy.balance -= fine;
+  state.economy.totalSpent += fine;
+  const what = f.kind === 'http' ? `visitors' traffic to ${f.dstIp} (unencrypted, port ${f.dstPort})` : `${f.protocol}/${f.dstPort} traffic to ${f.dstIp}`;
+  const fix = f.dstPort === 80 ? 'Put a TLS certificate on it so visitors use HTTPS.' : 'Send it through a VPN, or use an encrypted protocol.';
+  const origin = state.devices[f.origin]?.id ?? (cache.paths[f.id]?.reachedServer ?? '');
+  addLog(state, origin, `Someone on the internet read ${what}. Fine $${fine}.`, 'alert');
+  notify(`Data leak: someone read ${what} on its way across the internet. Fine $${fine}. ${fix}`, 'alert');
 }
 
 export function backupOk(state: WorldState, cache: RuntimeCache, id: DeviceId): boolean {

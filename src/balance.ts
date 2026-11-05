@@ -233,7 +233,10 @@ export const RUSH_SPEED = 4;
 export const SIGHT_RADIUS = 2;             // cells an engineer watches around them
 export const SPOT_RADIUS = 5;              // cells at which an engineer notices a stranger
 export const TILE_PRICE: Record<Tile, number> = { ground: 0, floor: 2, raised: 6, wall: 8, door: 40, smartdoor: 150, vent: 60, xwall: 0, lift: 0, street: 0, sidewalk: 0, void: 0 };
-export const MULTIFLOOR_SWITCH_PRICE = 140;   // per floor it spans
+export const MULTIFLOOR_SWITCH_PRICE = 140;
+/** Unencrypted traffic crossing your internet lines gets read now and then. */
+export const MITM_MEAN_S = 420;
+export const PLAINTEXT_PORTS = new Set([21, 23, 25, 80, 110, 143, 161, 389, 445, 3260, 7000, 7001, 8080, 10050]);   // per floor it spans
 export const MAP_W = 40;
 export const MAP_H = 26;
 

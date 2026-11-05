@@ -169,7 +169,7 @@ export const onToast = (fn: ToastFn) => { toastListeners.add(fn); return () => t
 export const toast = (msg: string, kind: ToastKind = 'info') => toastListeners.forEach((fn) => fn(msg, kind));
 
 // ---------- helpers ----------
-function nextId(s: WorldState, prefix: 'dev' | 'cab' | 'rt' | 'fw' | 'flw' | 'svc' | 'inc' | 'rl' | 'nat' | 'uf' | 'dom' | 'rec' | 'rule' | 'pip' | 'mt' | 'pat' | 'si'): string {
+function nextId(s: WorldState, prefix: 'dev' | 'cab' | 'rt' | 'fw' | 'flw' | 'svc' | 'inc' | 'rl' | 'nat' | 'uf' | 'dom' | 'rec' | 'rule' | 'pip' | 'mt' | 'pat' | 'si' | 'vpn'): string {
   return `${prefix}_${s.nextId++}`;
 }
 
@@ -453,7 +453,7 @@ export function editDevice<K extends DeviceKind>(id: DeviceId, kind: K, fn: (d: 
 }
 
 /** Allocate an id for a route, rule, or rate limit. Call inside editDevice(). */
-export function genId(prefix: 'rt' | 'fw' | 'rl' | 'nat' | 'uf' | 'rec' | 'rule' | 'mt' | 'pat' | 'si'): string {
+export function genId(prefix: 'rt' | 'fw' | 'rl' | 'nat' | 'uf' | 'rec' | 'rule' | 'mt' | 'pat' | 'si' | 'vpn'): string {
   return nextId(world.get(), prefix);
 }
 
@@ -535,15 +535,17 @@ export function buyBiggerBlock(): string | null {
 
 /** Usable addresses of the public block, minus the ISP gateway. */
 export function publicIps(s: WorldState): string[] {
-  const up = Object.values(s.devices).find((d) => d.kind === 'uplink');
-  if (!up || up.kind !== 'uplink') return [];
-  const c = parseCidr(up.publicSubnet);
-  if (!c) return [];
-  const size = 2 ** (32 - c.prefix);
+  // every building you own brings its own block
   const out: string[] = [];
-  for (let i = 1; i < size - 1; i++) {
-    const ip = formatIp((c.net + i) >>> 0);
-    if (ip !== up.uplinkIp) out.push(ip);
+  for (const up of Object.values(s.devices)) {
+    if (up.kind !== 'uplink') continue;
+    const c = parseCidr(up.publicSubnet);
+    if (!c) continue;
+    const size = 2 ** (32 - c.prefix);
+    for (let i = 1; i < size - 1; i++) {
+      const ip = formatIp((c.net + i) >>> 0);
+      if (ip !== up.uplinkIp) out.push(ip);
+    }
   }
   return out;
 }
@@ -667,11 +669,11 @@ export function bareEndpoints(s: WorldState, serviceId: string): string[] {
   return Object.values(s.publicAddrs).filter((a) => a.services.includes(serviceId)).map((a) => a.ip);
 }
 
-export function setUplinkTier(tier: UplinkTier): string | null {
+export function setUplinkTier(tier: UplinkTier, id?: string): string | null {
   const s = world.get();
   if (tier === 'carrier' && !s.unlocks.carrierUplink) return 'Carrier tier is locked';
   world.update((w) => {
-    const up = Object.values(w.devices).find((d) => d.kind === 'uplink');
+    const up = (id ? w.devices[id] : undefined) ?? Object.values(w.devices).find((d) => d.kind === 'uplink');
     if (up?.kind !== 'uplink') return;
     up.uplinkTier = tier;
     up.bandwidthMbps = UPLINK_TIER[tier].bandwidthMbps;

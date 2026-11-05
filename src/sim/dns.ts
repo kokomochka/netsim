@@ -64,8 +64,7 @@ export function resolveFor(s: WorldState, ctx: NetCtx, host: ServerDevice, name:
 /** Does the host reach the internet on tcp/443? */
 export function internetOk(s: WorldState, ctx: NetCtx, host: ServerDevice): { ok: boolean; why: string } {
   const p = roundTrip(ctx, host, parseIp(INTERNET_IP)!, 'tcp', 443);
-  const upl = Object.values(s.devices).find((d) => d.kind === 'uplink');
-  if (upl && tripOk(p, upl.id)) return { ok: true, why: '' };
+  if (tripOk(p) && s.devices[p.reachedServer ?? '']?.kind === 'uplink') return { ok: true, why: '' };
   return { ok: false, why: p.explain };
 }
 
