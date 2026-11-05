@@ -1,6 +1,7 @@
 // Pointer, touch and keyboard handling. One finger / left mouse: tap acts on
 // the current tool, drag pans (or moves the selected device). Two fingers:
 // pinch-zoom + pan. Wheel: zoom at cursor. Middle mouse: pan.
+import { redo, undo } from './state/undo';
 import { BODY, CELL, ZOOM_MAX, ZOOM_MIN } from './balance';
 import { distToPolyline, nearestFreePort, portAtPoint, portPos, freePorts } from './state/geometry';
 import type { Camera, Vec2 } from './state/types';
@@ -300,6 +301,11 @@ export function attachInput(r: Renderer, isUiBusy: () => boolean): void {
 
   window.addEventListener('keydown', (e) => {
     if (isUiBusy()) return; // typing in a panel field
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z' || e.key === 'y' || e.key === 'Y')) {
+      e.preventDefault();
+      doUndo(e.key === 'y' || e.key === 'Y' || e.shiftKey);
+      return;
+    }
     const u = ui.get();
     if (e.key === 'Escape') {
       if (u.pendingCable) ui.update((x) => { x.pendingCable = null; }, 'ui');
@@ -329,4 +335,14 @@ export function attachInput(r: Renderer, isUiBusy: () => boolean): void {
     if (e.key === '2') { world.update((w) => { w.speed = 2; }, 'world'); return; }
     if (e.key === '3') { world.update((w) => { w.speed = 4; }, 'world'); return; }
   });
+}
+
+/** Undo or redo one change, and say what it did to the money. */
+export function doUndo(again: boolean): void {
+  const r = again ? redo() : undo();
+  if (!r.ok) { toast(again ? 'Nothing to redo.' : 'Nothing to undo.'); return; }
+  const sel = ui.get().selection;
+  if (sel && (sel.type === 'device' ? !world.get().devices[sel.id] : !world.get().cables[sel.id])) ui.update((x) => { x.selection = null; }, 'ui');
+  const m = Math.round(r.money);
+  toast(`${again ? 'Redone' : 'Undone'}${m > 0 ? ` · $${m} back` : m < 0 ? ` · $${-m} spent again` : ''}.`);
 }

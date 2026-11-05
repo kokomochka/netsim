@@ -8,6 +8,7 @@ import { showcaseWorld } from './state/showcase';
 import { newWorld, resetRuntime, runtime, toast, ui, world } from './state/world';
 import type { WorldState } from './state/types';
 import { initTheme, onThemeChange } from './ui/theme';
+import { installUndo } from './state/undo';
 import './ui/hud';
 import './ui/inspector';
 import './ui/palette';
@@ -23,6 +24,7 @@ function isUiBusy(): boolean {
 async function boot(): Promise<void> {
   const stage = document.getElementById('stage')!;
   initTheme();
+  installUndo();
   const renderer = new Renderer();
   await renderer.init(stage);
   onThemeChange(() => renderer.retheme());

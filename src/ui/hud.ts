@@ -16,6 +16,8 @@ type Tab = 'goals' | 'staff' | 'domains' | 'monitoring' | 'events';
 import { fmtTime } from './inspector';
 import { baseStyle } from './styles';
 import { onThemeChange, theme, toggleTheme } from './theme';
+import { canRedo, canUndo, onUndoChange } from '../state/undo';
+import { doUndo } from '../input';
 
 function hintText(): string {
   const u = ui.get();
@@ -99,6 +101,10 @@ const TOPBAR_CSS = `
   .badge { display: inline-block; min-width: 20px; padding: 1px 6px; margin-left: 6px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; text-align: center; }
   button[data-action="menu"] { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 30%, transparent); }
   button[data-action="menu"]:hover { background: var(--accent-strong); color: #fff; }
+  .undo-pair { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--well); }
+  button.icon { width: 32px; min-height: 30px; padding: 0; display: grid; place-items: center; border-radius: 8px; border: 0; }
+  button.icon svg { width: 17px; height: 17px; }
+  button.icon:disabled { opacity: .35; }
   button.theme { width: 38px; padding: 0; display: grid; place-items: center; border-radius: 10px; background: var(--well); }
   button.theme:hover { background: var(--accent-soft); color: var(--accent); }
   button.theme svg { width: 18px; height: 18px; }
@@ -163,6 +169,10 @@ export class NsTopbar extends HTMLElement {
         <button class="goals" data-action="staff" title="Engineers, jobs and security">Staff<span class="badge" data-el="staffcount">0</span></button>
         <button class="goals" data-action="monitoring" data-el="monbtn" title="What your monitoring servers see" hidden>Monitoring<span class="badge" data-el="moncount">0</span></button>
         <button class="goals" data-action="goals" title="Goals, unlocks and events">Goals<span class="badge" data-el="goalcount">0</span></button>
+        <div class="undo-pair">
+          <button class="icon ghost" data-action="undo" title="Undo (Ctrl+Z)" aria-label="Undo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+          <button class="icon ghost" data-action="redo" title="Redo (Ctrl+Shift+Z)" aria-label="Redo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
+        </div>
         <button class="theme ghost" data-action="theme" title="Switch light / dark mode" aria-label="Switch light / dark mode"></button>
         <div class="menu-wrap">
           <button data-action="menu" aria-haspopup="true" aria-expanded="false">Game ▾</button>
@@ -209,6 +219,12 @@ export class NsTopbar extends HTMLElement {
     const paintTheme = () => { themeBtn.innerHTML = theme() === 'dark' ? SUN : MOON; themeBtn.title = theme() === 'dark' ? 'Light mode' : 'Dark mode'; };
     paintTheme();
     onThemeChange(paintTheme);
+    const paintUndo = () => {
+      (this.shadow.querySelector('[data-action="undo"]') as HTMLButtonElement).disabled = !canUndo();
+      (this.shadow.querySelector('[data-action="redo"]') as HTMLButtonElement).disabled = !canRedo();
+    };
+    paintUndo();
+    onUndoChange(paintUndo);
     this.shadow.addEventListener('click', (e) => {
       const t = (e.target as HTMLElement).closest('button') as HTMLButtonElement | null;
       if (t === themeBtn) { toggleTheme(); return; }
@@ -268,6 +284,8 @@ export class NsTopbar extends HTMLElement {
       case 'goals': (document.querySelector('ns-goals') as NsGoals | null)?.show('goals'); return;
       case 'staff': (document.querySelector('ns-goals') as NsGoals | null)?.show('staff'); return;
       case 'domains': (document.querySelector('ns-goals') as NsGoals | null)?.show('domains'); return;
+      case 'undo': doUndo(false); return;
+      case 'redo': doUndo(true); return;
       case 'monitoring': (document.querySelector('ns-goals') as NsGoals | null)?.show('monitoring'); return;
       case 'fit': act?.fit(); this.toggleMenu(false); return;
       case 'save': await act?.save(); this.toggleMenu(false); return;
