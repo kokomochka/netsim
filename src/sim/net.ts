@@ -17,7 +17,7 @@ import { MGMT_PORT, MON_AGENT_PORT, ROLES, SNMP_PORT, FLOW_SHAPE } from '../bala
 import { formatCidr, formatIp, inCidr, isAny, parseCidr, parseIp, parsePortRange, prefixToMask, subnetOf, type Cidr } from '../state/ip';
 import type {
   BlockReason, Cable, CableId, DdosScrubberDevice, Device, DeviceId, FirewallDevice, FirewallInterface,
-  Flow, Hop, L3Device, NatEntry, ResolvedPath, Route, RuntimeCache, ServerDevice, Service, WorldState,
+  Flow, Hop, L3Device, NatEntry, ResolvedPath, Route, RuntimeCache, ServerDevice, Service, WorldState, PortVlan,
 } from '../state/types';
 
 // ─── Context ────────────────────────────────────────────────────────────────
@@ -52,25 +52,31 @@ const portLabel = (d: Device, p: number) => d.ports[p]?.label ?? `port ${p}`;
 
 // ─── Interfaces ─────────────────────────────────────────────────────────────
 
-export interface L3If { port: number; ip: number; ipText: string; cidr: Cidr; name: string }
+export interface L3If { port: number; ip: number; ipText: string; cidr: Cidr; name: string; vlan: number | null }
 
 /** Configured, usable L3 interfaces of a device (port up + cabled). */
 export function l3Ifaces(ctx: NetCtx, d: Device, requireLink = true): L3If[] {
   const out: L3If[] = [];
-  const add = (port: number, ip: string, mask: string, name: string) => {
+  const add = (port: number, ip: string, mask: string, name: string, vlan: number | null = null) => {
     const n = parseIp(ip);
     const c = subnetOf(ip, mask);
     if (n === null || !c) return;
     if (requireLink && (!d.ports[port]?.up || !ctx.links.has(`${d.id}:${port}`))) return;
-    out.push({ port, ip: n, ipText: ip.trim(), cidr: c, name });
+    out.push({ port, ip: n, ipText: ip.trim(), cidr: c, name, vlan });
   };
   switch (d.kind) {
     case 'server': add(0, d.ip, d.mask, 'eth0'); d.extra.forEach((x, i) => add(i + 1, x.ip, x.mask, `eth${i + 1}`)); break;
     case 'desk': add(0, d.ip, d.mask, 'eth0'); break;
     case 'tower': add(0, d.ip, d.mask, 'eth0'); break;
     case 'badge': add(0, d.ip, d.mask, 'eth0'); break;
-    case 'router': for (const i of d.interfaces) add(i.port, i.ip, i.mask, portLabel(d, i.port)); break;
-    case 'firewall': for (const i of d.interfaces) add(i.port, i.ip, i.mask, i.name); break;
+    case 'router':
+      for (const i of d.interfaces) add(i.port, i.ip, i.mask, portLabel(d, i.port));
+      for (const v of d.subifs ?? []) add(v.port, v.ip, v.mask, `${portLabel(d, v.port)}.${v.vlan}`, v.vlan);
+      break;
+    case 'firewall':
+      for (const i of d.interfaces) add(i.port, i.ip, i.mask, i.name);
+      for (const v of d.subifs ?? []) add(v.port, v.ip, v.mask, v.name || `vlan${v.vlan}`, v.vlan);
+      break;
     case 'uplink': {
       const c = parseCidr(d.publicSubnet);
       if (c) add(0, d.uplinkIp, `/${c.prefix}`, 'WAN');
@@ -81,8 +87,9 @@ export function l3Ifaces(ctx: NetCtx, d: Device, requireLink = true): L3If[] {
   return out;
 }
 
-function answersArp(ctx: NetCtx, d: Device, port: number, ip: number): 'own' | 'proxy' | null {
-  const ifs = l3Ifaces(ctx, d).filter((i) => i.port === port);
+function answersArp(ctx: NetCtx, d: Device, port: number, ip: number, tag: number | null = null): 'own' | 'proxy' | null {
+  // a box only hears frames in the VLAN of its interface: untagged for the port itself
+  const ifs = l3Ifaces(ctx, d).filter((i) => i.port === port && i.vlan === tag);
   if (ifs.some((i) => i.ip === ip)) return 'own';
   const primary = ctx.standbyFor.get(d.id);
   if (primary) { const pd = ctx.s.devices[primary]; if (pd?.kind === 'server' && parseIp(pd.ip) === ip) return 'own'; }
@@ -94,7 +101,7 @@ function answersArp(ctx: NetCtx, d: Device, port: number, ip: number): 'own' | '
 
 // ─── L2 segment walk ────────────────────────────────────────────────────────
 
-interface SegNode { devId: DeviceId; inPort: number; cableId: CableId; parent: number; outPort: number | null }
+interface SegNode { devId: DeviceId; inPort: number; cableId: CableId; parent: number; outPort: number | null; tag: number | null }
 
 interface SegResult {
   nodes: SegNode[];
@@ -103,11 +110,29 @@ interface SegResult {
   dead: string[];          // reasons branches ended
 }
 
-/** Breadth-first walk of the broadcast domain that starts at dev:port. */
-export function walkSegment(ctx: NetCtx, devId: DeviceId, port: number): SegResult {
+/** A switch port's VLAN setup (missing = access port in VLAN 1). */
+export function portVlan(d: Device, port: number): PortVlan {
+  return (d.kind === 'switch' ? d.vlans?.[port] : undefined) ?? { mode: 'access', vid: 1, allowed: 'all' };
+}
+
+/** Does a trunk carry this VLAN? "all", or a list like "10,20,30-35". */
+export function trunkAllows(allowed: string, vid: number): boolean {
+  const t = (allowed ?? 'all').trim().toLowerCase();
+  if (!t || t === 'all') return true;
+  return t.split(/[\s,]+/).some((part) => {
+    const m = /^(\d+)(?:-(\d+))?$/.exec(part);
+    if (!m) return false;
+    const a = Number(m[1]), b = m[2] ? Number(m[2]) : a;
+    return vid >= a && vid <= b;
+  });
+}
+
+/** Breadth-first walk of the broadcast domain (one VLAN) that starts at dev:port.
+ *  `tag` is the 802.1Q tag the frame leaves with (null = untagged). */
+export function walkSegment(ctx: NetCtx, devId: DeviceId, port: number, tag: number | null = null): SegResult {
   const res: SegResult = { nodes: [], endpoints: [], cables: [], dead: [] };
   const seenCable = new Set<CableId>();
-  const queue: { devId: DeviceId; port: number; parent: number }[] = [{ devId, port, parent: -1 }];
+  const queue: { devId: DeviceId; port: number; parent: number; wire: number | null }[] = [{ devId, port, parent: -1, wire: tag }];
   while (queue.length) {
     const q = queue.shift()!;
     const link = ctx.links.get(`${q.devId}:${q.port}`);
@@ -118,14 +143,29 @@ export function walkSegment(ctx: NetCtx, devId: DeviceId, port: number): SegResu
     const peer = ctx.s.devices[link.peerId];
     if (!peer) continue;
     if (q.parent >= 0) res.nodes[q.parent]!.outPort = res.nodes[q.parent]!.outPort ?? q.port;
-    const idx = res.nodes.push({ devId: peer.id, inPort: link.peerPort, cableId: link.cableId, parent: q.parent, outPort: null }) - 1;
+    const idx = res.nodes.push({ devId: peer.id, inPort: link.peerPort, cableId: link.cableId, parent: q.parent, outPort: null, tag: q.wire }) - 1;
     if (!devUp(peer)) { res.dead.push(`${peer.name} has failed`); continue; }
     if (!peer.ports[link.peerPort]?.up) { res.dead.push(`${peer.name} ${portLabel(peer, link.peerPort)} is down (NIC fault)`); continue; }
     if (peer.kind === 'switch') {
       if (ctx.storm[peer.id]) { res.dead.push(`broadcast storm on ${peer.name}: switches are looped without spanning tree`); continue; }
-      for (const p of peer.ports) if (p.index !== link.peerPort && p.up) queue.push({ devId: peer.id, port: p.index, parent: idx });
+      // which VLAN is the frame in, now that it is inside the switch?
+      const pin = portVlan(peer, link.peerPort);
+      let vid: number;
+      if (pin.mode === 'access') {
+        if (q.wire !== null && q.wire !== pin.vid) { res.dead.push(`${peer.name} ${portLabel(peer, link.peerPort)} is an access port in VLAN ${pin.vid} and drops frames tagged ${q.wire}`); continue; }
+        vid = pin.vid;
+      } else {
+        vid = q.wire ?? 1;
+        if (!trunkAllows(pin.allowed, vid)) { res.dead.push(`the trunk on ${peer.name} ${portLabel(peer, link.peerPort)} does not carry VLAN ${vid}`); continue; }
+      }
+      for (const p of peer.ports) {
+        if (p.index === link.peerPort || !p.up) continue;
+        const pout = portVlan(peer, p.index);
+        if (pout.mode === 'access') { if (pout.vid === vid) queue.push({ devId: peer.id, port: p.index, parent: idx, wire: null }); }
+        else if (trunkAllows(pout.allowed, vid)) queue.push({ devId: peer.id, port: p.index, parent: idx, wire: vid === 1 ? null : vid });
+      }
     } else if (peer.kind === 'ddos_scrubber') {
-      queue.push({ devId: peer.id, port: link.peerPort === 0 ? 1 : 0, parent: idx });
+      queue.push({ devId: peer.id, port: link.peerPort === 0 ? 1 : 0, parent: idx, wire: q.wire });
     } else {
       res.endpoints.push(idx);
     }
@@ -195,7 +235,7 @@ export function pathMatches(p: ResolvedPath): string[] {
  * Deliver a frame from `from:outPort` to whoever answers ARP for nextHop.
  * Appends L2 hops; returns the endpoint reached or null (path blocked).
  */
-function l2Deliver(ctx: NetCtx, b: PathBuilder, from: Device, outPort: number, nextHop: number, pkt: Pkt): { dev: Device; inPort: number } | null {
+function l2Deliver(ctx: NetCtx, b: PathBuilder, from: Device, outPort: number, nextHop: number, pkt: Pkt, tag: number | null = null): { dev: Device; inPort: number; tag: number | null } | null {
   const link = ctx.links.get(`${from.id}:${outPort}`);
   if (!link) {
     b.block('link_down', `${from.name} ${portLabel(from, outPort)} has no cable plugged in.`);
@@ -205,13 +245,13 @@ function l2Deliver(ctx: NetCtx, b: PathBuilder, from: Device, outPort: number, n
     b.block('link_down', `${from.name} ${portLabel(from, outPort)} is down (NIC fault).`);
     return null;
   }
-  const seg = walkSegment(ctx, from.id, outPort);
+  const seg = walkSegment(ctx, from.id, outPort, tag);
   let target = -1;
   let how: 'own' | 'proxy' | null = null;
   for (const i of seg.endpoints) {
     const n = seg.nodes[i]!;
     const d = ctx.s.devices[n.devId]!;
-    const a = answersArp(ctx, d, n.inPort, nextHop);
+    const a = answersArp(ctx, d, n.inPort, nextHop, n.tag);
     if (a) { target = i; how = a; break; }
   }
   const lastHop = b.last()!;
@@ -238,7 +278,7 @@ function l2Deliver(ctx: NetCtx, b: PathBuilder, from: Device, outPort: number, n
     const n = seg.nodes[chain[k]!]!;
     const d = ctx.s.devices[n.devId]!;
     b.p.resources.push(`cab:${n.cableId}`);
-    if (k === chain.length - 1) return { dev: d, inPort: n.inPort };
+    if (k === chain.length - 1) return { dev: d, inPort: n.inPort, tag: n.tag };
     const next = seg.nodes[chain[k + 1]!]!;
     // outPort of this L2 hop = port toward the next node
     const out = otherEnd(ctx, next.cableId, d.id);
@@ -309,7 +349,7 @@ function scrub(d: DdosScrubberDevice, pkt: Pkt, b: PathBuilder): string | null {
 
 // ─── Routing ────────────────────────────────────────────────────────────────
 
-export interface RouteHit { port: number; nextHop: number | null; desc: string; kind: 'connected' | 'static' | 'ospf' }
+export interface RouteHit { port: number; nextHop: number | null; desc: string; kind: 'connected' | 'static' | 'ospf'; vlan: number | null; src: string }
 
 const AD = { connected: 0, static: 1, ospf: 110 } as const;
 
@@ -322,7 +362,7 @@ export function lookupRoute(ctx: NetCtx, d: L3Device, dst: number): RouteHit | n
     }
   };
   for (const i of ifs) {
-    if (inCidr(dst, i.cidr)) consider(i.cidr.prefix, AD.connected, 0, { port: i.port, nextHop: null, kind: 'connected', desc: `${formatCidr(i.cidr)} is directly connected on ${i.name}` });
+    if (inCidr(dst, i.cidr)) consider(i.cidr.prefix, AD.connected, 0, { port: i.port, vlan: i.vlan, src: i.ipText, nextHop: null, kind: 'connected', desc: `${formatCidr(i.cidr)} is directly connected on ${i.name}` });
   }
   const viaStatic = (r: Route, kind: 'static' | 'ospf', ad: number, via?: string) => {
     const c = parseCidr(r.dest);
@@ -331,7 +371,7 @@ export function lookupRoute(ctx: NetCtx, d: L3Device, dst: number): RouteHit | n
     const exit = ifs.find((i) => inCidr(nh, i.cidr));
     if (!exit) return; // next hop not on a connected subnet: route is unusable
     consider(c.prefix, ad, r.metric, {
-      port: exit.port, nextHop: nh, kind,
+      port: exit.port, vlan: exit.vlan, src: exit.ipText, nextHop: nh, kind,
       desc: `${kind === 'static' ? 'static route' : `OSPF route${via ? ` from ${via}` : ''}`} ${formatCidr(c)} via ${r.nextHop} out ${exit.name}`,
     });
   };
@@ -341,6 +381,14 @@ export function lookupRoute(ctx: NetCtx, d: L3Device, dst: number): RouteHit | n
 }
 
 // ─── Firewall ACL ───────────────────────────────────────────────────────────
+
+/** The firewall zone a frame belongs to: the port's interface, or its VLAN sub-interface. */
+function fwIf(fw: FirewallDevice, port: number, tag: number | null): FirewallInterface | undefined {
+  if (tag === null) return fw.interfaces.find((i) => i.port === port);
+  const v = (fw.subifs ?? []).find((x) => x.port === port && x.vlan === tag);
+  if (!v) return undefined;
+  return { port, name: v.name || `vlan${v.vlan}`, securityLevel: v.securityLevel ?? 50, ip: v.ip, mask: v.mask, mac: '', dhcp: v.dhcp };
+}
 
 function aclEval(fw: FirewallDevice, inIf: FirewallInterface, outIf: FirewallInterface, pkt: Pkt, b: PathBuilder, devId: DeviceId) {
   for (let i = 0; i < fw.rules.length; i++) {
@@ -374,12 +422,13 @@ const portOk = (n: NatEntry, proto: string, port: number) => !n.publicPort || ((
 
 const MAX_L3_HOPS = 16;
 
-function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number, nextHop: number, pkt: Pkt): ResolvedPath {
+function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number, nextHop: number, pkt: Pkt, outTag: number | null = null): ResolvedPath {
   let cur: Device = start;
   let port = outPort;
   let nh = nextHop;
+  let tag = outTag;
   for (let ttl = MAX_L3_HOPS; ttl > 0; ttl--) {
-    const arrived = l2Deliver(ctx, b, cur, port, nh, pkt);
+    const arrived = l2Deliver(ctx, b, cur, port, nh, pkt, tag);
     if (!arrived) return b.done();
     const d = arrived.dev;
     const inPort = arrived.inPort;
@@ -446,6 +495,10 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
         const block = parseCidr(d.publicSubnet);
         if (pkt.dir === 'fwd' && b.p.hops[0]?.deviceId !== d.id) {
           // traffic from inside heading to the internet (e.g. phone-tower subscribers)
+          if (PRIVATE_NETS.some((c) => inCidr(pkt.dst, c))) {
+            h.note = `drops it: ${ipStr(pkt.dst)} is a private address, nobody routes it on the internet`;
+            return b.block('no_route', `${ipStr(pkt.dst)} is a private address, so the internet can't deliver it. It has to be inside your network: add a route (or VLAN interface) for its subnet.`);
+          }
           if (block && inCidr(pkt.dst, block)) {
             h.note = 'sends it back down: the destination is one of your own addresses';
             return b.block('ttl', `Traffic for ${ipStr(pkt.dst)} came back to the ISP. Check your routes.`);
@@ -477,7 +530,7 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
         const h = b.hop({ deviceId: d.id, inPort, outPort: null, note: '' });
         b.p.resources.push(`dev:${d.id}`);
         const notes: string[] = [];
-        const inIf = d.kind === 'firewall' ? d.interfaces.find((i) => i.port === inPort) : undefined;
+        const inIf = d.kind === 'firewall' ? fwIf(d, inPort, arrived.tag) : undefined;
         if (inIf) notes.push(`in on ${inIf.name}`);
         let srcNatted = false;
         // static NAT
@@ -522,7 +575,7 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
         }
         notes.push(rt.desc);
         if (d.kind === 'firewall') {
-          const outIf = d.interfaces.find((i) => i.port === rt.port)!;
+          const outIf = fwIf(d, rt.port, rt.vlan) ?? d.interfaces.find((i) => i.port === rt.port)!;
           if (pkt.dir === 'fwd' && inIf) {
             const v = aclEval(d, inIf, outIf, pkt, b, d.id);
             notes.push(v.desc);
@@ -536,7 +589,7 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
         }
         // dynamic source NAT: inside hosts leaving this port share its address
         if (pkt.dir === 'fwd' && ctx.s.unlocks.dynamicNat && !srcNatted) {
-          const outIp = d.interfaces.find((i) => i.port === rt.port)?.ip;
+          const outIp = rt.src;
           const rule = (d.pat ?? []).find((r) => r.outPort === rt.port && (() => { const c = parseCidr(r.src); return !!c && inCidr(pkt.src, c); })());
           const pub = outIp ? parseIp(outIp) : null;
           if (rule && pub !== null && pub !== pkt.src) { notes.push(`dynamic NAT source ${ipStr(pkt.src)} → ${outIp}`); pkt = { ...pkt, src: pub }; }
@@ -545,6 +598,7 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
         h.note = notes.join(' · ');
         cur = d;
         port = rt.port;
+        tag = rt.vlan;
         nh = rt.nextHop ?? pkt.dst;
         break;
       }
@@ -646,10 +700,10 @@ export function resolveFromL3(ctx: NetCtx, dev: L3Device, dst: number, proto: Pk
   const b = new PathBuilder();
   const rt = lookupRoute(ctx, dev, dst);
   if (!rt) { b.hop({ deviceId: dev.id, inPort: null, outPort: null, note: `no route to ${ipStr(dst)}` }); return b.block('no_route', `${dev.name} has no route to ${ipStr(dst)}. Add a default route.`); }
-  const src = parseIp(dev.interfaces.find((i) => i.port === rt.port)?.ip ?? '') ?? 0;
+  const src = parseIp(rt.src) ?? 0;
   b.hop({ deviceId: dev.id, inPort: null, outPort: rt.port, note: `sends ${proto}/${dport} itself: ${rt.desc}` });
   const pkt: Pkt = { src, srcAny: false, dst, proto, sport: 50000, dport, syn: false, mbps, dir: 'fwd' };
-  return routeOnward(ctx, b, dev, rt.port, rt.nextHop ?? dst, pkt);
+  return routeOnward(ctx, b, dev, rt.port, rt.nextHop ?? dst, pkt, rt.vlan);
 }
 
 /** Replies that come back from the internet retrace the request: NAT and the firewalls
@@ -696,6 +750,9 @@ export function flowShape(s: WorldState, f: Flow): { req: number; resp: number }
   }
 }
 
+/** RFC 1918 and carrier-grade NAT space: never routed on the internet. */
+const PRIVATE_NETS = ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10'].map((c) => parseCidr(c)!);
+
 /** Roles that speak HTTP: tcp/80, or tcp/443 with a certificate. */
 const HTTP_ROLES = new Set(['web', 'cloud', 'ai_frontend']);
 
@@ -714,7 +771,7 @@ export function resolvePollReply(ctx: NetCtx, dev: Device, polledIp: number, mas
   if (!rt) { b.hop({ deviceId: dev.id, inPort: null, outPort: null, note: `no route back to ${ipStr(master)}` }); return b.block('no_route', `${dev.name} has no route back to ${ipStr(master)} for the SNMP reply. Add a route toward the master's subnet.`); }
   b.hop({ deviceId: dev.id, inPort: null, outPort: rt.port, note: `sends the SNMP reply: ${rt.desc}` });
   const pkt: Pkt = { src: polledIp, srcAny: false, dst: master, proto, sport: port, dport: 50000, syn: false, mbps: 0, dir: 'ret' };
-  return routeOnward(ctx, b, dev, rt.port, rt.nextHop ?? master, pkt);
+  return routeOnward(ctx, b, dev, rt.port, rt.nextHop ?? master, pkt, rt.vlan);
 }
 
 /** Representative visitor address used for the reply check. */
@@ -770,10 +827,12 @@ export function runDhcp(ctx: NetCtx): void {
         const n = seg.nodes[i]!;
         const d = s.devices[n.devId];
         if (!d || (d.kind !== 'router' && d.kind !== 'firewall')) continue;
-        const itf = (d.interfaces as { port: number; ip: string; mask: string; dhcp: { enabled: boolean } }[]).find((x) => x.port === n.inPort);
+        const itf = n.tag === null
+          ? (d.interfaces as { port: number; ip: string; mask: string; dhcp: { enabled: boolean } }[]).find((x) => x.port === n.inPort)
+          : (d.subifs ?? []).find((x) => x.port === n.inPort && x.vlan === n.tag);
         const net = itf ? subnetOf(itf.ip, itf.mask) : null;
         if (!itf || !itf.dhcp?.enabled || !net) continue;
-        const key = `${d.id}:${n.inPort}`;
+        const key = `${d.id}:${n.inPort}:${n.tag ?? 0}`;
         const off = leases.get(key) ?? 100;
         leases.set(key, off + 1);
         srv.ip = ipStr((net.net + off) >>> 0);
@@ -799,12 +858,12 @@ export function runOspf(ctx: NetCtx): void {
   for (const a of speakers) {
     const list: { peer: L3Device; peerIp: string }[] = [];
     for (const ai of l3Ifaces(ctx, a)) {
-      const seg = walkSegment(ctx, a.id, ai.port);
+      const seg = walkSegment(ctx, a.id, ai.port, ai.vlan);
       for (const i of seg.endpoints) {
         const n = seg.nodes[i]!;
         const peer = speakers.find((x) => x.id === n.devId);
         if (!peer) continue;
-        const pi = l3Ifaces(ctx, peer).find((x) => x.port === n.inPort && inCidr(x.ip, ai.cidr));
+        const pi = l3Ifaces(ctx, peer).find((x) => x.port === n.inPort && x.vlan === n.tag && inCidr(x.ip, ai.cidr));
         if (pi) list.push({ peer, peerIp: pi.ipText });
       }
     }

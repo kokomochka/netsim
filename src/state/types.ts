@@ -122,6 +122,13 @@ export interface NatEntry {
   privatePort?: number;    // …sent on to this port (default: the same one)
 }
 
+/** How a switch port treats VLANs. Access: one VLAN, untagged. Trunk: tagged VLANs,
+ *  with VLAN 1 untagged (native). Ports with no entry are access ports in VLAN 1. */
+export interface PortVlan { mode: 'access' | 'trunk'; vid: number; allowed: string }   // allowed: 'all' or '10,20,30-35'
+
+/** A VLAN sub-interface on a router or firewall port (router-on-a-stick). */
+export interface SubIf { id: string; port: number; vlan: number; ip: string; mask: string; dhcp: DhcpPool; name?: string; securityLevel?: number }
+
 export interface DhcpPool {
   enabled: boolean;   // requires the DHCP unlock
 }
@@ -290,6 +297,7 @@ export interface RouterDevice extends DeviceBase {
   routes: Route[];
   nat: NatEntry[];
   pat?: PatRule[];               // dynamic source NAT (unlock: dynamicNat)
+  subifs?: SubIf[];              // VLAN sub-interfaces
   ospf: boolean;
   usage: Usage;
 }
@@ -299,6 +307,7 @@ export interface RouterDevice extends DeviceBase {
 export interface SwitchDevice extends DeviceBase {
   kind: 'switch';
   macTable: Record<string, number>;  // MAC → port, filled while learning is unlocked
+  vlans?: Record<number, PortVlan>;  // per port; missing = access VLAN 1
   stp: boolean;                      // spanning tree: blocks redundant links, fails over when one dies
 }
 
@@ -357,6 +366,7 @@ export interface FirewallDevice extends DeviceBase {
   routes: Route[];
   nat: NatEntry[];
   pat?: PatRule[];               // dynamic source NAT (unlock: dynamicNat)
+  subifs?: SubIf[];              // VLAN sub-interfaces
   ospf: boolean;
   capacityMbps: number;
   usage: Usage;

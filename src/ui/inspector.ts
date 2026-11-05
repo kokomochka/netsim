@@ -110,6 +110,9 @@ const INSPECTOR_CSS = `
   .natp-row { grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) 92px 28px; }
   .pat-row { grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr) 28px; }
   .pat-row .arrow { color: var(--ink-faint); text-align: center; }
+  .vlan-row { grid-template-columns: 76px 92px minmax(0, 1fr); }
+  .subif-row { grid-template-columns: minmax(0, 1fr) 90px 28px; }
+  .subif-row2 { grid-template-columns: minmax(0, 1fr) 70px; }
   .mt-row { grid-template-columns: minmax(0, 1fr) 150px 28px; }
   .px-card { gap: 6px; }
   .px-head { grid-template-columns: minmax(0, 1fr) 28px; }
@@ -1381,7 +1384,7 @@ export class NsInspector extends HTMLElement {
       if (msgs) ifSec.appendChild(msgs);
     }
     if (!s.unlocks.dhcp) ifSec.appendChild(el('p', 'locked', `DHCP server: ${lockedMsg('dhcp')}`));
-    return [ifSec, this.routesSection(d), this.natSection(d)];
+    return [ifSec, this.subifSection(s, d), this.routesSection(d), this.natSection(d)];
   }
 
   private climateSection(d: Device): HTMLElement | null {
@@ -1480,12 +1483,88 @@ export class NsInspector extends HTMLElement {
         return box;
       }),
     );
-    return [stpSec, ...this.switchForwarding(s, d)];
+    return [this.vlanPortsSection(s, d), stpSec, ...this.switchForwarding(s, d)];
+  }
+
+  /** Per port: access (one VLAN) or trunk (tagged VLANs to another switch or a router). */
+  private vlanPortsSection(s: WorldState, d: DeviceOf<'switch'>): HTMLElement {
+    const vids = new Set<number>([1]);
+    for (const v of Object.values(d.vlans ?? {})) if (v.mode === 'access') vids.add(v.vid);
+    const sec = section(heading('VLANs', vids.size > 1 ? [...vids].sort((a, b) => a - b).join(', ') : 'all ports in VLAN 1'));
+    sec.appendChild(el('p', 'note', 'Each VLAN is its own network on the same switch. Access ports belong to one VLAN; a trunk carries several, tagged, to another switch or to a router with VLAN sub-interfaces.'));
+    const edit = (port: number, fn: (v: { mode: 'access' | 'trunk'; vid: number; allowed: string }) => void) =>
+      editDevice(d.id, 'switch', (x) => { const all = (x.vlans ??= {}); const cur = all[port] ?? { mode: 'access', vid: 1, allowed: 'all' }; fn(cur); all[port] = cur; });
+    for (const p of d.ports) {
+      const v = d.vlans?.[p.index] ?? { mode: 'access' as const, vid: 1, allowed: 'all' };
+      const cab = Object.values(s.cables).find((c) => (c.a.deviceId === d.id && c.a.port === p.index) || (c.b.deviceId === d.id && c.b.port === p.index));
+      const peer = cab ? s.devices[cab.a.deviceId === d.id ? cab.b.deviceId : cab.a.deviceId]?.name : undefined;
+      const row = el('div', 'row vlan-row');
+      const pl = el('span', 'pl');
+      pl.innerHTML = `${p.label}<br><span class="side">${peer ? '' : 'free'}</span>`;
+      if (peer) (pl.querySelector('.side') as HTMLElement).textContent = peer;
+      row.appendChild(pl);
+      row.appendChild(makeSelect(`vl-${p.index}-m`, [{ value: 'access', label: 'access' }, { value: 'trunk', label: 'trunk' }], v.mode, `${p.label} mode`, (m) => edit(p.index, (x) => { x.mode = m as 'access' | 'trunk'; })));
+      if (v.mode === 'access') {
+        row.appendChild(makeInput(`vl-${p.index}-v`, String(v.vid), {
+          placeholder: '1', ariaLabel: `${p.label} VLAN`,
+          onCommit: (t) => { const n = Number(t); if (Number.isInteger(n) && n >= 1 && n <= 4094) edit(p.index, (x) => { x.vid = n; }); else { toast('A VLAN is a number from 1 to 4094', 'error'); this.schedule(); } },
+        }));
+      } else {
+        row.appendChild(makeInput(`vl-${p.index}-a`, v.allowed, {
+          placeholder: 'all, or 10,20,30-35', ariaLabel: `${p.label} allowed VLANs`,
+          check: /^\s*(all|\d+(-\d+)?(\s*,\s*\d+(-\d+)?)*)\s*$/i.test(v.allowed || 'all') ? null : { level: 'bad', msg: 'Use all, or a list like 10,20,30-35' },
+          onCommit: (t) => edit(p.index, (x) => { x.allowed = t.trim() || 'all'; }),
+        }));
+      }
+      sec.appendChild(row);
+    }
+    return sec;
+  }
+
+  /** Router-on-a-stick: one port, several VLANs, an address in each. */
+  private subifSection(s: WorldState, d: DeviceOf<'router'> | DeviceOf<'firewall'>): HTMLElement {
+    const subs = d.subifs ?? [];
+    const fw = d.kind === 'firewall';
+    const sec = section(heading('VLAN sub-interfaces', subs.length ? `${subs.length}` : 'none'));
+    sec.appendChild(el('p', 'note', `One cable, many networks: the switch port on the other end has to be a trunk that carries these VLANs. Each sub-interface is the gateway for its VLAN${fw ? ' and its own zone with a security level' : ''}.`));
+    const edit = (fn: (x: DeviceOf<'router'> | DeviceOf<'firewall'>) => void) => editL3(d.id, fn);
+    const ports = d.ports.map((p) => ({ value: String(p.index), label: p.label }));
+    subs.forEach((v, i) => {
+      const upd = (fn: (y: NonNullable<typeof d.subifs>[number]) => void) => edit((x) => { const y = x.subifs?.[i]; if (y) fn(y); });
+      const card = el('div', 'card');
+      const row = el('div', 'row subif-row');
+      row.appendChild(makeSelect(`si-${v.id}-p`, ports, String(v.port), 'Port', (t) => upd((y) => { y.port = Number(t); })));
+      row.appendChild(makeInput(`si-${v.id}-v`, String(v.vlan), {
+        placeholder: 'VLAN', ariaLabel: 'VLAN',
+        onCommit: (t) => { const n = Number(t); if (Number.isInteger(n) && n >= 2 && n <= 4094) upd((y) => { y.vlan = n; }); else { toast('Sub-interfaces use VLANs 2–4094 (VLAN 1 is the port itself)', 'error'); this.schedule(); } },
+      }));
+      const chk = (v.ip ? checkAddr(v.ip, v.mask) : null) ?? duplicateCheck(s, v.ip, `${d.name}.${v.vlan}`);
+      row.appendChild(btn('✕', () => edit((x) => { x.subifs?.splice(i, 1); }), 'icon-btn danger', 'Remove sub-interface'));
+      card.appendChild(row);
+      card.appendChild(makeInput(`si-${v.id}-ip`, addrText(v.ip, v.mask), { placeholder: 'gateway address, e.g. 192.168.30.1/24', ariaLabel: 'Address', check: chk, onCommit: (t) => this.commitAddr(t, (ip, mask) => upd((y) => { y.ip = ip; y.mask = mask; })) }));
+      if (fw) {
+        const r2 = el('div', 'row subif-row2');
+        r2.appendChild(makeInput(`si-${v.id}-n`, v.name ?? '', { placeholder: `zone name, e.g. vlan${v.vlan}`, ariaLabel: 'Zone name', onCommit: (t) => upd((y) => { y.name = t.trim(); }) }));
+        r2.appendChild(makeInput(`si-${v.id}-l`, String(v.securityLevel ?? 50), {
+          placeholder: '0-100', ariaLabel: 'Security level',
+          onCommit: (t) => { const n = Number(t); if (Number.isInteger(n) && n >= 0 && n <= 100) upd((y) => { y.securityLevel = n; }); else { toast('Security level must be 0–100', 'error'); this.schedule(); } },
+        }));
+        card.appendChild(r2);
+      }
+      card.appendChild(el('span', 'sub', `${d.ports[v.port]?.label ?? '?'}.${v.vlan}${fw ? ` · zone ${v.name || `vlan${v.vlan}`} · level ${v.securityLevel ?? 50}` : ''}`));
+      if (s.unlocks.dhcp && v.ip) card.appendChild(makeCheck(`si-${v.id}-dhcp`, ` DHCP server on VLAN ${v.vlan}`, v.dhcp.enabled, (on) => upd((y) => { y.dhcp.enabled = on; })));
+      const m = makeMsgs([chk]);
+      if (m) card.appendChild(m);
+      sec.appendChild(card);
+    });
+    const next = Math.max(9, ...subs.map((x) => x.vlan)) + 1;
+    sec.appendChild(btn('+ Add sub-interface', () => edit((x) => { (x.subifs ??= []).push({ id: genId('si'), port: x.ports.find((p) => p.label)?.index ?? 0, vlan: next, ip: '', mask: '/24', dhcp: { enabled: false }, ...(fw ? { name: `vlan${next}`, securityLevel: 50 } : {}) }); }), 'add'));
+    return sec;
   }
 
   private switchForwarding(s: WorldState, d: DeviceOf<'switch'>): HTMLElement[] {
     const sec = section(heading('Forwarding', s.unlocks.macLearning ? 'MAC learning' : 'flooding'));
-    sec.appendChild(el('p', 'note', 'Everything plugged into one switch shares one subnet (one broadcast domain). Use a router or firewall to join different subnets.'));
+    sec.appendChild(el('p', 'note', 'Ports in the same VLAN share one subnet (one broadcast domain). A router or firewall joins different subnets and VLANs.'));
     if (!s.unlocks.macLearning) {
       sec.appendChild(el('p', 'locked', `This switch behaves like a hub: each frame goes out every port, which loads every cable. MAC learning: ${lockedMsg('macLearning')}`));
     } else {
@@ -1593,7 +1672,7 @@ export class NsInspector extends HTMLElement {
     polSec.appendChild(seg);
     polSec.appendChild(el('p', 'note', 'Applies to low → high security traffic that no rule matched. Real firewalls default to deny.'));
 
-    return [ifSec, rulesSec, polSec, this.natSection(d), this.routesSection(d), this.talkersSection(d)];
+    return [ifSec, this.subifSection(s, d), rulesSec, polSec, this.natSection(d), this.routesSection(d), this.talkersSection(d)];
   }
 
   private scrubberBody(d: DeviceOf<'ddos_scrubber'>): HTMLElement[] {
