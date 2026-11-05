@@ -70,9 +70,16 @@ const INSPECTOR_CSS = `
   header input:hover { border-color: var(--line); }
   header strong { font-size: 13px; overflow-wrap: anywhere; }
   .close { min-height: 32px; width: 34px; padding: 0; font-size: 18px; line-height: 1; }
-  .body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 16px 16px; display: grid; gap: 4px; align-content: start; }
-  section { display: grid; gap: 10px; padding: 14px 0 12px; border-bottom: 1px solid var(--line); min-width: 0; }
-  section:last-child { border-bottom: 0; }
+  .body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 16px; background: var(--well-soft); display: grid; gap: 4px; align-content: start; }
+  section { display: grid; gap: 10px; padding: 14px; margin-top: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper); box-shadow: var(--shadow-sm); min-width: 0; }
+  .body.enter section { animation: secIn .22s ease-out both; }
+  .body.enter section:nth-child(2) { animation-delay: .03s; } .body.enter section:nth-child(3) { animation-delay: .06s; } .body.enter section:nth-child(4) { animation-delay: .09s; } .body.enter section:nth-child(n+5) { animation-delay: .12s; }
+  @keyframes secIn { from { opacity: 0; transform: translateY(6px); } }
+  .ptabs { display: flex; gap: 2px; margin: 10px 16px 0; padding: 3px; border-radius: 10px; background: var(--well); flex: none; }
+  .ptabs button { flex: 1; border: 0; background: transparent; min-height: 32px; font-size: 13px; }
+  .ptabs button:hover { background: var(--paper); }
+  .ptabs button[aria-selected="true"] { background: var(--paper); color: var(--accent); box-shadow: var(--shadow-sm); }
+  .pbadge { display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 5px; border-radius: 999px; background: var(--bad); color: #fff; font-size: 11px; }
   h3 {
     margin: 0; font-family: var(--font-body); font-size: 12px; font-weight: 800;
     letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink);
@@ -255,6 +262,9 @@ function makeCheck(id: string, label: string, checked: boolean, onChange: (v: bo
   return l;
 }
 
+/** Mark a section as live state (second tab) rather than configuration. */
+function status<T extends HTMLElement>(sec: T): T { sec.dataset.cat = 'hw'; return sec; }
+
 function section(title: string | HTMLElement, ...children: (HTMLElement | null)[]): HTMLElement {
   const sec = el('section');
   if (typeof title === 'string') sec.appendChild(el('h3', undefined, title));
@@ -303,6 +313,8 @@ export class NsInspector extends HTMLElement {
   private wantRender = false;
   private openTraces = new Set<string>();
   private roleChoice: RoleKind | null = null;
+  private panelTab: 'sw' | 'hw' = 'sw';
+  private lastPanelKey = '';
 
   constructor() {
     super();
@@ -531,7 +543,7 @@ export class NsInspector extends HTMLElement {
   }
 
   private talkersSection(d: Device, title = 'Top talkers'): HTMLElement {
-    return section(title,
+    return status(section(title,
       d.kind === 'firewall' ? el('p', 'note', 'Every flow that touched this device right now, heaviest first. During a flood one unfamiliar range dominates.') : null,
       this.liveBlock(() => {
         const rows = (runtime.talkers[d.id] ?? []).slice(0, 8);
@@ -545,7 +557,7 @@ export class NsInspector extends HTMLElement {
         }
         return t;
       }),
-    );
+    ));
   }
 
   private portsSection(s: WorldState, d: Device): HTMLElement {
@@ -1021,7 +1033,7 @@ export class NsInspector extends HTMLElement {
       const names = here.map((v) => v.fqdn ?? `${st.devices[v.serverId]?.name} ${v.kind}`).join(', ');
       return d.cert ? `Answers ${names} with HTTPS: ×${CERT_BONUS} visitors and revenue.` : `Answers ${names}. A certificate here gives them ×${CERT_BONUS} visitors and revenue.`;
     }, 'note'));
-    return [this.addressingSection(s, d), rolesSec, hwSec, partsSec, agSec, certSec];
+    return [this.addressingSection(s, d), rolesSec, agSec, certSec, status(hwSec), status(partsSec)];
   }
 
   private partsTable(id: string): HTMLElement {
@@ -1655,18 +1667,37 @@ export class NsInspector extends HTMLElement {
     header.appendChild(btn('×', () => select(null), 'close ghost', 'Close panel'));
     frag.appendChild(header);
 
+    // two tabs: what you set up, and how the box is doing
+    // status first on the second tab: condition, load, heat; then the parts you can change
+    const own = this.deviceBody(s, d);
+    const secs: HTMLElement[] = own.filter((x) => x.dataset.cat !== 'hw');
+    const sw = this.softwareSection(s, d);
+    if (sw) secs.push(sw);
+    secs.push(status(this.healthSection(d)));
+    const usage = this.usageSection(d);
+    if (usage) secs.push(status(usage));
+    const clim = this.climateSection(d);
+    if (clim) secs.push(status(clim));
+    secs.push(...own.filter((x) => x.dataset.cat === 'hw'), status(this.portsSection(s, d)), status(this.logsSection(d)));
+    const names = d.kind === 'server' ? ['Software', 'Hardware'] : ['Setup', 'Status'];
+    const tabs = el('div', 'ptabs');
+    tabs.setAttribute('role', 'tablist');
+    const probs = knownProblems(s, d).length + (d.health.state === 'failed' ? 1 : 0);
+    (['sw', 'hw'] as const).forEach((k, i) => {
+      const b = btn(names[i]!, () => { this.panelTab = k; this.render(); });
+      b.setAttribute('role', 'tab');
+      b.setAttribute('aria-selected', String(this.panelTab === k));
+      if (k === 'hw' && probs) { const n = el('span', 'pbadge', String(probs)); b.appendChild(n); }
+      tabs.appendChild(b);
+    });
+    frag.appendChild(tabs);
     const body = el('div', 'body');
     body.id = 'panel-body';
-    for (const sec of this.deviceBody(s, d)) body.appendChild(sec);
-    const sw = this.softwareSection(s, d);
-    if (sw) body.appendChild(sw);
-    const clim = this.climateSection(d);
-    if (clim) body.appendChild(clim);
-    const usage = this.usageSection(d);
-    if (usage) body.appendChild(usage);
-    body.appendChild(this.healthSection(d));
-    body.appendChild(this.portsSection(s, d));
-    body.appendChild(this.logsSection(d));
+    body.dataset.tab = this.panelTab;
+    const key = `${d.id}:${this.panelTab}`;
+    if (key !== this.lastPanelKey) body.classList.add('enter');
+    this.lastPanelKey = key;
+    for (const sec of secs) if ((sec.dataset.cat ?? 'sw') === this.panelTab) body.appendChild(sec);
     frag.appendChild(body);
 
     const footer = document.createElement('footer');
