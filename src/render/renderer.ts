@@ -9,12 +9,14 @@ import { doorStates, smartDoorsLocked } from '../sim/staff';
 import { inParking, isIndoor, isPath, placementError, tileAt } from '../state/floor';
 import { flowShape } from '../sim/net';
 import { layoutCables } from './cablelayout';
+import { IsoScene, isoProject, isoUnproject } from './iso';
 import { clearIconCache, deviceContext } from './icons';
 import { CABLE_COLOR, COLORS, KIND_COLOR } from './palette';
 
 interface DeviceView {
   kind: string;
   root: Container;
+  label: Container;
   icon: Graphics;
   plate: Graphics; // background behind labels so cables pass under them
   name: Text;
@@ -70,6 +72,14 @@ export class Renderer {
   readonly app = new Application();
   private grid = new Graphics();
   private worldLayer = new Container();
+  /** floor-plane layers: tilted into isometric by these two transforms */
+  private plane = new Container();
+  private planeInner = new Container();
+  /** upright text and badges, placed at projected points */
+  private labels = new Container();
+  private deviceLabels = new Container();
+  private iso = new IsoScene();
+  private view: 'top' | 'iso' = 'top';
   private floorG = new Graphics();
   private doorG = new Graphics();
   private roomTint = new Graphics();
@@ -104,7 +114,11 @@ export class Renderer {
     host.appendChild(this.app.canvas);
     this.app.canvas.style.touchAction = 'none';
     this.app.stage.addChild(this.grid, this.worldLayer);
-    this.worldLayer.addChild(this.floorG, this.roomTint, this.doorG, this.cables, this.carriers, this.devices, this.ports, this.healthBadges, this.people, this.peopleLabels, this.roomLabels, this.overlay, this.ghost);
+    this.worldLayer.addChild(this.plane, this.iso.stand, this.labels);
+    this.plane.addChild(this.planeInner);
+    this.planeInner.addChild(this.floorG, this.roomTint, this.doorG, this.cables, this.carriers, this.devices, this.ports, this.people, this.overlay, this.ghost);
+    this.labels.addChild(this.healthBadges, this.deviceLabels, this.roomLabels, this.peopleLabels);
+    this.view = ui.get().view ?? 'top';
     this.ghost.addChild(this.ghostIcon, this.ghostMark);
     this.ghost.alpha = 0.55;
     this.ghost.visible = false;
@@ -117,10 +131,10 @@ export class Renderer {
       this.applyCamera();
       if (reason !== 'camera') this.redrawWorld();
     });
-    ui.subscribe(() => this.redrawInteractive());
+    ui.subscribe((u) => { if ((u.view ?? 'top') !== this.view) this.setView(u.view ?? 'top'); else this.redrawInteractive(); });
     pointer.subscribe(() => this.redrawInteractive());
     this.app.renderer.on('resize', () => this.drawGrid());
-    this.app.ticker.add(() => this.drawStreams(performance.now()));
+    this.app.ticker.add(() => { const now = performance.now(); this.drawStreams(now); if (this.view === 'iso') { this.iso.animate(world.get(), now); this.iso.drawPeople(world.get(), now); } });
 
     this.applyCamera();
     this.redrawWorld();
@@ -135,8 +149,9 @@ export class Renderer {
   /** Rebuild everything that baked in palette colours, after applyCanvasTheme(). */
   retheme(): void {
     clearIconCache();
-    for (const v of this.views.values()) v.root.destroy({ children: true });
+    for (const v of this.views.values()) { v.root.destroy({ children: true }); v.label.destroy({ children: true }); }
     this.views.clear();
+    this.iso.clear();
     for (const t of this.labelViews.values()) t.destroy();
     this.labelViews.clear();
     for (const t of this.roomLabelViews.values()) t.destroy();
@@ -153,9 +168,10 @@ export class Renderer {
     if (!up) return;
     const { w, h } = this.screenSize;
     const scale = w < 760 ? 1 : 1.25;
-    const x = (up.gridPos.gx + 0.5) * CELL * scale;
-    const y = (up.gridPos.gy + 0.5) * CELL * scale;
-    world.update((wd) => { wd.camera = { scale, x: Math.min(w * 0.25, 160) - x, y: h * 0.42 - y }; }, 'camera');
+    const p = this.project((up.gridPos.gx + 0.5) * CELL, (up.gridPos.gy + 0.5) * CELL);
+    const x = p.x * scale, y = p.y * scale;
+    const left = this.view === 'iso' ? w * 0.4 : Math.min(w * 0.25, 160);
+    world.update((wd) => { wd.camera = { scale, x: left - x, y: h * 0.42 - y }; }, 'camera');
   }
 
   get canvas(): HTMLCanvasElement {
@@ -164,7 +180,43 @@ export class Renderer {
 
   screenToWorld(sx: number, sy: number): Vec2 {
     const c = world.get().camera;
-    return { x: (sx - c.x) / c.scale, y: (sy - c.y) / c.scale };
+    const x = (sx - c.x) / c.scale, y = (sy - c.y) / c.scale;
+    return this.view === 'iso' ? isoUnproject(x, y) : { x, y };
+  }
+
+  /** World floor point → camera-space point (identity in the top-down view). */
+  project(x: number, y: number): Vec2 {
+    return this.view === 'iso' ? isoProject(x, y) : { x, y };
+  }
+
+  get isIso(): boolean { return this.view === 'iso'; }
+
+  /** In 3D the boxes stand above their floor cell: pick them by what is drawn. */
+  pickDevice(sx: number, sy: number): string | null {
+    if (this.view !== 'iso') return null;
+    const c = world.get().camera;
+    return this.iso.pick((sx - c.x) / c.scale, (sy - c.y) / c.scale);
+  }
+
+  /** Switch between the flat plan and the isometric view, keeping the same spot in the middle. */
+  private setView(v: 'top' | 'iso'): void {
+    const { w, h } = this.screenSize;
+    const mid = this.screenToWorld(w / 2, h / 2);
+    this.view = v;
+    const p = this.project(mid.x, mid.y);
+    const c = world.get().camera;
+    this.floorKey = '';
+    this.iso.clear();
+    world.update((wd) => { wd.camera = { scale: c.scale, x: w / 2 - p.x * c.scale, y: h / 2 - p.y * c.scale }; }, 'camera');
+    this.redrawWorld();
+  }
+
+  /** Where labels hang under a device, and where its badges float. */
+  private anchor(d: Device): { x: number; y: number; top: number } {
+    const cx = (d.gridPos.gx + 0.5) * CELL, cy = (d.gridPos.gy + 0.5) * CELL;
+    if (this.view !== 'iso') return { x: cx, y: cy, top: cy - BODY / 2 };
+    const p = isoProject(cx, cy);
+    return { x: p.x, y: p.y - 8, top: p.y - this.iso.heightOf(d.kind) - 22 };
   }
 
   get screenSize(): { w: number; h: number } {
@@ -175,6 +227,11 @@ export class Renderer {
     const c = world.get().camera;
     this.worldLayer.position.set(c.x, c.y);
     this.worldLayer.scale.set(c.scale);
+    const iso = this.view === 'iso';
+    this.plane.scale.set(1, iso ? 0.5 : 1);
+    this.planeInner.rotation = iso ? Math.PI / 4 : 0;
+    this.iso.stand.visible = iso;
+    this.devices.visible = !iso;
     const showLabels = c.scale >= 0.45;
     for (const [id, v] of this.views) {
       const door = world.get().devices[id]?.kind === 'badge';
@@ -187,6 +244,7 @@ export class Renderer {
 
   private drawGrid(): void {
     const g = this.grid;
+    if (this.view === 'iso') { g.clear(); return; }
     const { width: w, height: h } = this.app.screen;
     const cam = world.get().camera;
     const cs = CELL * cam.scale;
@@ -223,7 +281,7 @@ export class Renderer {
     const s = world.get();
     const f = s.floor;
     const towers = Object.values(s.devices).filter((d) => d.kind === 'tower').map((d) => `${d.gridPos.gx},${d.gridPos.gy}`).join(';');
-    const key = `${JSON.stringify(f.tiles)}|${JSON.stringify(f.parking ?? null)}|${towers}|${JSON.stringify(doorStates())}`;
+    const key = `${this.view}|${JSON.stringify(f.tiles)}|${JSON.stringify(f.parking ?? null)}|${towers}|${JSON.stringify(doorStates())}`;
     if (key === this.floorKey) return;
     this.floorKey = key;
     const g = this.floorG;
@@ -243,7 +301,7 @@ export class Renderer {
         }
         const h = hash(x, y);
         g.rect(px, py, CELL, CELL).fill({ color: h % 3 === 0 ? COLORS.grassDark : COLORS.grass });
-        if (towerCells.has(`${x},${y}`)) continue;
+        if (towerCells.has(`${x},${y}`) || this.view === 'iso') continue;
         if (h % 100 < 22) {
           const ox = px + 12 + (h >> 8) % 24, oy = py + 12 + (h >> 12) % 24, r = 9 + (h >> 16) % 6;
           g.circle(ox + 3, oy + 4, r).fill({ color: COLORS.trunkShadow, alpha: 0.45 });
@@ -313,6 +371,7 @@ export class Renderer {
     // walls join their neighbours so rooms read as solid outlines
     const isWallish = (x: number, y: number) => { const t = f.tiles[`${x},${y}`]; return t === 'wall' || t === 'door' || t === 'smartdoor' || t === 'vent'; };
     const T = 10;
+    if (this.view === 'iso') { this.iso.buildStatic(s, (x, y) => isPath(f, x, y), (x, y) => tileAt(f, x, y), (x, y) => inParking(f, x, y)); return; }
     for (const { x, y, t } of tiles) {
       if (t !== 'wall' && t !== 'vent') continue;
       const cx = x * CELL + CELL / 2, cy = y * CELL + CELL / 2;
@@ -407,7 +466,8 @@ export class Renderer {
       const txt = `${t.toFixed(1)} °C`;
       if (lab.text !== txt) lab.text = txt;
       lab.style.fill = t > 40 ? COLORS.healthBad : t > 30 ? COLORS.healthWarn : COLORS.label;
-      lab.position.set(mx * CELL + 4, my * CELL + 3);
+      const lp = this.project(mx * CELL + 6, my * CELL + 6);
+      lab.position.set(lp.x, lp.y - (this.view === 'iso' ? 8 : 3));
     }
     for (const [k, t] of this.roomLabelViews) if (!seen.has(k)) { t.destroy(); this.roomLabelViews.delete(k); }
   }
@@ -428,17 +488,22 @@ export class Renderer {
         this.labelViews.set(id, t);
       }
       if (t.text !== text) t.text = text;
-      t.position.set(x, y);
+      // x, y are floor coordinates of the label point in the flat plan
+      const lp = this.project(x, y);
+      t.position.set(lp.x, this.view === 'iso' ? lp.y - 30 : lp.y);
     };
+    const iso = this.view === 'iso';
     for (const e of Object.values(s.staff.engineers)) {
       const x = e.x * CELL, y = e.y * CELL;
       g.roundRect((Math.floor(e.x) - 2) * CELL, (Math.floor(e.y) - 2) * CELL, CELL * 5, CELL * 5, 10)
         .fill({ color: COLORS.sight, alpha: 0.045 }).stroke({ width: 1, color: COLORS.sight, alpha: 0.16 });
       const seated = e.state === 'seated';
       const oy = seated ? 15 : 0;
-      g.ellipse(x, y + oy + 2, 8, 5).fill({ color: COLORS.carShadow, alpha: 0.14 });
-      g.circle(x, y + oy, 7).fill({ color: COLORS.engineer }).stroke({ width: 1.5, color: COLORS.engineerDark });
-      g.circle(x, y + oy - 1, 3.4).fill({ color: 0xf1d3b3 });
+      if (!iso) {
+        g.ellipse(x, y + oy + 2, 8, 5).fill({ color: COLORS.carShadow, alpha: 0.14 });
+        g.circle(x, y + oy, 7).fill({ color: COLORS.engineer }).stroke({ width: 1.5, color: COLORS.engineerDark });
+        g.circle(x, y + oy - 1, 3.4).fill({ color: 0xf1d3b3 });
+      }
       const job = e.jobId ? s.staff.jobs[e.jobId] : undefined;
       if (job?.started && !job.remote) {
         const pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.012);
@@ -455,15 +520,17 @@ export class Renderer {
           for (let i = 0; i < n; i++) if ((i + Math.floor(phase)) % 2 === 0) g.circle(ax + ((bx - ax) * i) / n, ay + ((by - ay) * i) / n, 1.4).fill({ color: COLORS.carrierNormal, alpha: 0.8 });
         }
       }
-      if (e.state === 'chasing') g.circle(x, y, 10).stroke({ width: 2, color: COLORS.strangerRim, alpha: 0.7 });
+      if (e.state === 'chasing' && !iso) g.circle(x, y, 10).stroke({ width: 2, color: COLORS.strangerRim, alpha: 0.7 });
       if (seated) { const t = this.labelViews.get(e.id); if (t) t.visible = false; seen.add(e.id); }
       else { label(e.id, e.name, x, y + oy - 10, COLORS.label); this.labelViews.get(e.id)!.visible = true; }
     }
     for (const t of Object.values(s.staff.trespassers)) {
       const x = t.x * CELL, y = t.y * CELL;
-      g.ellipse(x, y + 2, 8, 5).fill({ color: COLORS.carShadow, alpha: 0.18 });
-      g.circle(x, y, 7).fill({ color: COLORS.stranger }).stroke({ width: 2, color: COLORS.strangerRim });
-      g.circle(x, y - 1, 3).fill({ color: 0x55555e });
+      if (!iso) {
+        g.ellipse(x, y + 2, 8, 5).fill({ color: COLORS.carShadow, alpha: 0.18 });
+        g.circle(x, y, 7).fill({ color: COLORS.stranger }).stroke({ width: 2, color: COLORS.strangerRim });
+        g.circle(x, y - 1, 3).fill({ color: 0x55555e });
+      }
       if (t.state === 'hacking') {
         const tgt = s.devices[t.targetId];
         const frac = t.progress / (10 * 20);
@@ -503,9 +570,12 @@ export class Renderer {
         name.position.set(0, BODY / 2 + 4);
         sub.position.set(0, BODY / 2 + 17);
         const plate = new Graphics();
-        root.addChild(icon, plate, name, sub);
+        const label = new Container();
+        root.addChild(icon);
+        label.addChild(plate, name, sub);
         this.devices.addChild(root);
-        v = { kind: d.kind, root, icon, plate, name, sub };
+        this.deviceLabels.addChild(label);
+        v = { kind: d.kind, root, label, icon, plate, name, sub };
         this.views.set(d.id, v);
         const show = s.camera.scale >= 0.45;
         name.visible = show;
@@ -513,6 +583,8 @@ export class Renderer {
         plate.visible = show;
       }
       v.root.position.set((d.gridPos.gx + 0.5) * CELL, (d.gridPos.gy + 0.5) * CELL);
+      const an = this.anchor(d);
+      v.label.position.set(an.x, an.y);
       if (d.kind === 'badge') { v.icon.visible = false; v.name.visible = false; v.sub.visible = false; v.plate.visible = false; continue; }
       const sl = subLabel(d, used);
       if (v.name.text !== d.name || v.sub.text !== sl || v.plate.context.instructions.length === 0) {
@@ -526,6 +598,7 @@ export class Renderer {
     for (const [id, v] of this.views) {
       if (!seen.has(id)) {
         v.root.destroy({ children: true });
+        v.label.destroy({ children: true });
         this.views.delete(id);
       }
     }
@@ -538,6 +611,7 @@ export class Renderer {
     const s = world.get();
     const u = ui.get();
     const p = pointer.get();
+    if (this.view === 'iso') this.iso.syncDevices(s, u.selection?.type === 'device' ? u.selection.id : null, p.hoverDevice);
     const used = portUsage(s);
     const cableMode = u.tool.mode === 'cable';
 
@@ -812,33 +886,33 @@ export class Renderer {
     const hg = this.healthBadges;
     hg.clear();
     for (const d of Object.values(s.devices)) {
-      const bx = (d.gridPos.gx + 0.5) * CELL - BODY / 2 + 4;
-      const by = (d.gridPos.gy + 0.5) * CELL - BODY / 2 + 4;
+      const an = this.anchor(d);
+      const bx = an.x - BODY / 2 + 4;
+      const by = an.top + 4;
       if (d.compromised) {
         const pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.006);
-        hg.roundRect(bx - 8, by - 8, BODY + 8, BODY + 8, 8).stroke({ width: 2, color: COLORS.strangerRim, alpha: 0.4 + 0.5 * pulse });
+        if (this.view === 'iso') hg.ellipse(an.x, an.y + 8, BODY * 0.6, BODY * 0.3).stroke({ width: 2, color: COLORS.strangerRim, alpha: 0.4 + 0.5 * pulse });
+        else hg.roundRect(bx - 8, by - 8, BODY + 8, BODY + 8, 8).stroke({ width: 2, color: COLORS.strangerRim, alpha: 0.4 + 0.5 * pulse });
         hg.circle(bx, by, 6).fill({ color: COLORS.strangerRim });
         hg.moveTo(bx - 3, by - 3).lineTo(bx + 3, by + 3).moveTo(bx + 3, by - 3).lineTo(bx - 3, by + 3).stroke({ width: 1.8, color: COLORS.plate });
       } else if (d.sw && d.sw.patch < s.staff.release) {
-        hg.circle(bx, by + BODY - 8, 5).fill({ color: COLORS.plate, alpha: 0.95 });
-        hg.poly([bx, by + BODY - 12, bx + 3.5, by + BODY - 7, bx - 3.5, by + BODY - 7]).fill({ color: COLORS.healthWarn });
+        const ty = this.view === 'iso' ? by : by + BODY - 8;
+        hg.circle(bx, ty, 5).fill({ color: COLORS.plate, alpha: 0.95 });
+        hg.poly([bx, ty - 4, bx + 3.5, ty + 1, bx - 3.5, ty + 1]).fill({ color: COLORS.healthWarn });
       }
       // only what someone knows about gets a badge
       const keys = Object.keys(s.known ?? {}).filter((k) => k.startsWith(d.id + ':'));
       const repairing = d.health.state === 'repairing';
       if (!keys.length && !repairing) continue;
       const alert = keys.some((k) => !k.includes(':w:') && !k.endsWith(':wear') && !k.endsWith(':warm'));
-      const cx = (d.gridPos.gx + 0.5) * CELL + BODY / 2 - 4;
-      const cy = (d.gridPos.gy + 0.5) * CELL - BODY / 2 + 4;
+      const cx = an.x + BODY / 2 - 4;
+      const cy = an.top + 4;
       const color = repairing ? COLORS.carrierNormal : alert ? COLORS.healthBad : COLORS.healthWarn;
-      // Outer ring
       hg.circle(cx, cy, 6).fill({ color: COLORS.plate, alpha: 0.95 });
       hg.circle(cx, cy, 5).fill({ color });
-
-      // Pulsing effect for failed/critical devices
       if (alert && !repairing) {
         const pulse = 0.3 + 0.3 * Math.sin(Date.now() * 0.005);
-        hg.circle(cx, cy, 8).stroke({ width: 1.5, color, alpha: pulse });
+        hg.circle(cx, cy, 8 + pulse * 4).stroke({ width: 1.5, color, alpha: 0.6 - pulse * 0.6 });
       }
     }
 

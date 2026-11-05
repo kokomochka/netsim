@@ -28,6 +28,7 @@ export type Tool =
 export type Selection = { type: 'device'; id: DeviceId } | { type: 'cable'; id: CableId } | null;
 
 export interface UiState {
+  view?: 'top' | 'iso';
   tool: Tool;
   cableType: CableType;
   selection: Selection;
@@ -119,6 +120,7 @@ export function newWorld(): WorldState {
 
 export const world = createStore<WorldState>(newWorld());
 export const ui = createStore<UiState>({
+  view: (() => { try { return localStorage.getItem('netsim_view') === 'top' ? 'top' : 'iso'; } catch { return 'iso'; } })(),
   tool: { mode: 'select' },
   cableType: 'ethernet',
   selection: null,

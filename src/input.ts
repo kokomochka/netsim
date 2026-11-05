@@ -40,10 +40,11 @@ export function fitView(r: Renderer): void {
   if (devs.length === 0) return;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const d of devs) {
-    minX = Math.min(minX, d.gridPos.gx * CELL);
-    minY = Math.min(minY, d.gridPos.gy * CELL);
-    maxX = Math.max(maxX, (d.gridPos.gx + 1) * CELL);
-    maxY = Math.max(maxY, (d.gridPos.gy + 1) * CELL + 24);
+    for (const [cx, cy] of [[0, 0], [1, 0], [0, 1], [1, 1]] as const) {
+      const p = r.project((d.gridPos.gx + cx) * CELL, (d.gridPos.gy + cy) * CELL);
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y - (r.isIso ? 40 : 0)); maxY = Math.max(maxY, p.y + 24);
+    }
   }
   const bw = Math.max(maxX - minX, CELL * 6);
   const bh = Math.max(maxY - minY, CELL * 4);
@@ -65,7 +66,7 @@ export function keepSelectionVisible(r: Renderer): void {
     const d = world.get().devices[sel];
     if (!d) return;
     const c = world.get().camera;
-    const sy = (d.gridPos.gy + 0.5) * CELL * c.scale + c.y;
+    const sy = r.project((d.gridPos.gx + 0.5) * CELL, (d.gridPos.gy + 0.5) * CELL).y * c.scale + c.y;
     const sheetTop = h * 0.36;
     if (sy > sheetTop - 30) setCamera({ ...c, y: c.y - (sy - h * 0.2) });
   });
@@ -74,6 +75,10 @@ export function keepSelectionVisible(r: Renderer): void {
 export function attachInput(r: Renderer, isUiBusy: () => boolean): void {
   const canvas = r.canvas;
   const pointers = new Map<number, Vec2>();
+  const devAt = (sp: Vec2, cell: { gx: number; gy: number }) => {
+    const id = r.pickDevice(sp.x, sp.y);
+    return (id ? world.get().devices[id] : undefined) ?? deviceAtCell(world.get(), cell.gx, cell.gy);
+  };
   let gesture: Gesture = { kind: 'none' };
 
   const local = (e: PointerEvent | WheelEvent): Vec2 => {
@@ -89,7 +94,7 @@ export function attachInput(r: Renderer, isUiBusy: () => boolean): void {
     }
     const wpt = r.screenToWorld(sp.x, sp.y);
     const cell = cellOf(wpt);
-    const dev = deviceAtCell(world.get(), cell.gx, cell.gy);
+    const dev = devAt(sp, cell);
     pointer.update((p) => {
       p.pointerWorld = wpt;
       p.hoverCell = cell;
@@ -102,7 +107,7 @@ export function attachInput(r: Renderer, isUiBusy: () => boolean): void {
     const u = ui.get();
     const wpt = r.screenToWorld(sp.x, sp.y);
     const cell = cellOf(wpt);
-    const dev = deviceAtCell(s, cell.gx, cell.gy);
+    const dev = u.tool.mode === 'place' ? deviceAtCell(s, cell.gx, cell.gy) : devAt(sp, cell);
     switch (u.tool.mode) {
       case 'place': {
         placeDevice(u.tool.kind, cell, u.tool.access);
@@ -199,7 +204,7 @@ export function attachInput(r: Renderer, isUiBusy: () => boolean): void {
       gesture = { kind: 'paint', last: `${cell.gx},${cell.gy}`, errored: !!err };
       return;
     }
-    const dev = deviceAtCell(world.get(), cell.gx, cell.gy);
+    const dev = devAt(sp, cell);
     gesture = { kind: 'press', x: sp.x, y: sp.y, deviceId: dev?.id ?? null, mouseButton: e.button };
   });
 

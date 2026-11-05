@@ -105,6 +105,8 @@ const TOPBAR_CSS = `
   button.icon { width: 32px; min-height: 30px; padding: 0; display: grid; place-items: center; border-radius: 8px; border: 0; }
   button.icon svg { width: 17px; height: 17px; }
   button.icon:disabled { opacity: .35; }
+  button.view { width: 38px; padding: 0; border-radius: 10px; background: var(--well); font-size: 12px; font-weight: 800; letter-spacing: .02em; }
+  button.view:hover { background: var(--accent-soft); color: var(--accent); }
   button.theme { width: 38px; padding: 0; display: grid; place-items: center; border-radius: 10px; background: var(--well); }
   button.theme:hover { background: var(--accent-soft); color: var(--accent); }
   button.theme svg { width: 18px; height: 18px; }
@@ -173,6 +175,7 @@ export class NsTopbar extends HTMLElement {
           <button class="icon ghost" data-action="undo" title="Undo (Ctrl+Z)" aria-label="Undo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
           <button class="icon ghost" data-action="redo" title="Redo (Ctrl+Shift+Z)" aria-label="Redo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
         </div>
+        <button class="ghost view" data-action="view" title="Switch between 3D and the flat plan" aria-label="Switch between 3D and the flat plan"></button>
         <button class="theme ghost" data-action="theme" title="Switch light / dark mode" aria-label="Switch light / dark mode"></button>
         <div class="menu-wrap">
           <button data-action="menu" aria-haspopup="true" aria-expanded="false">Game ▾</button>
@@ -225,6 +228,10 @@ export class NsTopbar extends HTMLElement {
     };
     paintUndo();
     onUndoChange(paintUndo);
+    const viewBtn = this.shadow.querySelector<HTMLButtonElement>('button.view')!;
+    const paintView = () => { viewBtn.textContent = ui.get().view === 'top' ? '3D' : '2D'; viewBtn.title = ui.get().view === 'top' ? 'Show the building in 3D' : 'Show the flat plan'; };
+    paintView();
+    ui.subscribe(paintView);
     this.shadow.addEventListener('click', (e) => {
       const t = (e.target as HTMLElement).closest('button') as HTMLButtonElement | null;
       if (t === themeBtn) { toggleTheme(); return; }
@@ -285,6 +292,12 @@ export class NsTopbar extends HTMLElement {
       case 'staff': (document.querySelector('ns-goals') as NsGoals | null)?.show('staff'); return;
       case 'domains': (document.querySelector('ns-goals') as NsGoals | null)?.show('domains'); return;
       case 'undo': doUndo(false); return;
+      case 'view': {
+        const v = ui.get().view === 'top' ? 'iso' : 'top';
+        try { localStorage.setItem('netsim_view', v); } catch { /* fine */ }
+        ui.update((x) => { x.view = v; }, 'ui');
+        return;
+      }
       case 'redo': doUndo(true); return;
       case 'monitoring': (document.querySelector('ns-goals') as NsGoals | null)?.show('monitoring'); return;
       case 'fit': act?.fit(); this.toggleMenu(false); return;

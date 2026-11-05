@@ -110,6 +110,15 @@ function drawGlyph(ctx: GraphicsContext, kind: DeviceKind): void {
 /** Forget cached icons so the next lookup uses the current palette. */
 export function clearIconCache(): void {
   cache.clear();
+  glyphCache.clear();
+}
+
+const glyphCache = new Map<string, GraphicsContext>();
+/** The icon alone, without its card: used standing on top of the 3D boxes. */
+export function glyphContext(kind: DeviceKind): GraphicsContext {
+  let ctx = glyphCache.get(kind);
+  if (!ctx) { ctx = new GraphicsContext(); drawGlyph(ctx, kind); glyphCache.set(kind, ctx); }
+  return ctx;
 }
 
 export function deviceContext(kind: DeviceKind): GraphicsContext {
