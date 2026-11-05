@@ -1,5 +1,5 @@
 // Tool palette — plain DOM custom element (no Lit).
-import { ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TILE_PRICE } from '../balance';
+import { ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, MULTIFLOOR_SWITCH_PRICE, TILE_PRICE } from '../balance';
 import { DEVICE_DEFS, NETWORK_KINDS } from '../state/devices';
 import type { CableType, Tile } from '../state/types';
 import { setTool, ui } from '../state/world';
@@ -35,6 +35,7 @@ function tileSvg(t: Tile): string {
     case 'door': return `<rect x="-13" y="-4" width="5" height="8" fill="${wall}"/><rect x="8" y="-4" width="5" height="8" fill="${wall}"/><path d="M-8 0V-14" stroke="${door}" stroke-width="2.5"/><path d="M-8 -14A14 14 0 0 1 6 0" fill="none" stroke="${door}" stroke-width="1"/>`;
     case 'smartdoor': return `<rect x="-13" y="-4" width="5" height="8" fill="${wall}"/><rect x="8" y="-4" width="5" height="8" fill="${wall}"/><path d="M-8 0V-14" stroke="${ok}" stroke-width="2.5"/><path d="M-8 -14A14 14 0 0 1 6 0" fill="none" stroke="${ok}" stroke-width="1"/><circle cx="0" cy="6" r="3" fill="${ok}"/>`;
     case 'ground': return '<rect x="-12" y="-12" width="24" height="24" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 3"/><path d="M-6 -6L6 6M6 -6L-6 6" stroke="currentColor" stroke-width="1.8"/>';
+    default: return '';
     case 'vent': return `<rect x="-13" y="-5" width="26" height="10" fill="${wall}"/><rect x="-9" y="-9" width="18" height="18" rx="3" fill="${vent}" stroke="${ac}" stroke-width="1.8"/><path d="M-5 -6V6M-1.5 -6V6M2 -6V6M5.5 -6V6" stroke="${ac}" stroke-width="1.3"/>`;
   }
 }
@@ -209,7 +210,7 @@ export class NsPalette extends HTMLElement {
 
     for (const k of NETWORK_KINDS) {
       const def = DEVICE_DEFS[k];
-      const active = t.mode === 'place' && t.kind === k;
+      const active = t.mode === 'place' && t.kind === k && !(t.kind === 'switch' && t.stack);
       const btn = this.makeToolButton(
         kindGlyph(k), def.label, `$${def.price}`,
         active,
@@ -219,6 +220,12 @@ export class NsPalette extends HTMLElement {
       devGroup.appendChild(btn);
     }
 
+    {
+      const active = t.mode === 'place' && t.kind === 'switch' && !!t.stack;
+      devGroup.appendChild(this.makeToolButton(kindGlyph('switch'), 'Multi-floor switch', `$${MULTIFLOOR_SWITCH_PRICE}/floor`, active,
+        'One switch on every floor of the building, at the same spot, joined inside. The only way to link floors.',
+        () => setTool(active ? { mode: 'select' } : { mode: 'place', kind: 'switch', stack: true })));
+    }
     this.root.appendChild(devGroup);
 
     const sepA = document.createElement('div');

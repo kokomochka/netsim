@@ -279,6 +279,7 @@ export interface DeskDevice extends DeviceBase {
   gateway: string;
   mac: string;
   ownerId: string | null;        // engineer sitting here
+  reception?: boolean;           // the front-desk PC by the entrance
 }
 
 // ─── Router ─────────────────────────────────────────────────────────────────
@@ -307,6 +308,7 @@ export interface RouterDevice extends DeviceBase {
 export interface SwitchDevice extends DeviceBase {
   kind: 'switch';
   macTable: Record<string, number>;  // MAC → port, filled while learning is unlocked
+  stack?: string;                    // multi-floor switch: one per storey, joined by a backplane
   vlans?: Record<number, PortVlan>;  // per port; missing = access VLAN 1
   stp: boolean;                      // spanning tree: blocks redundant links, fails over when one dies
 }
@@ -632,7 +634,26 @@ export interface RuntimeCache {
 
 // ─── Floor plan and people ──────────────────────────────────────────────────
 
-export type Tile = 'ground' | 'floor' | 'raised' | 'wall' | 'door' | 'smartdoor' | 'vent';
+export type Tile = 'ground' | 'floor' | 'raised' | 'wall' | 'door' | 'smartdoor' | 'vent'
+  | 'xwall'      // a building's outer wall: fixed
+  | 'lift'       // the lift: the same cell on every storey
+  | 'street' | 'sidewalk'
+  | 'void';      // nothing here: upper storeys outside a building
+
+/** A building in the city. Footprint in band-0 cells; storey k is the same cells k × STRIDE rows down. */
+export interface Building {
+  id: string;
+  name: string;
+  rects: Rect[];
+  floors: number;
+  front: 'n' | 's';            // which way the street side faces
+  owned: boolean;
+  forSale: boolean;
+  price: number;
+  door: GridPos;
+  lift: GridPos;
+  uplinkId: DeviceId | null;
+}
 
 export interface Rect { x0: number; y0: number; x1: number; y1: number }
 
@@ -754,6 +775,7 @@ export interface WorldState {
   unlocks: Unlocks;
   achievements: Record<AchievementId, AchievementState>;
   floor: Floor;
+  buildings: Record<string, Building>;
   staff: Staff;
   climate: Climate;
   domains: Record<string, Domain>;

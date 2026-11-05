@@ -4,6 +4,7 @@ import { sampleWorld } from '../src/state/sample';
 import { setPortMedia, addRole, connect, editDevice, newWorld, placeDevice, resetRuntime, runtime, world, buyPart, paintTile, testFlags } from '../src/state/world';
 testFlags.instantParts = true;
 testFlags.fixedPublicBlock = true;
+testFlags.legacyMap = true;
 import type { WorldState } from '../src/state/types';
 
 const run = (s: WorldState, n: number) => { for (let i = 0; i < n; i++) tick(s, runtime); };

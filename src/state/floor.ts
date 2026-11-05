@@ -1,11 +1,13 @@
 // Floor plan: tiles, walls, doors, and grid pathfinding for people.
 import { MAP_H, MAP_W, SIGHT_RADIUS } from '../balance';
+import { CITY_H, STRIDE, buildingAt } from './city';
 import { cellKey } from './geometry';
 import type { DeviceKind, Floor, GridPos, Rect, Tile, WorldState } from './types';
 
-export const tileAt = (f: Floor, x: number, y: number): Tile => f.tiles[cellKey(x, y)] ?? 'ground';
+export const tileAt = (f: Floor, x: number, y: number): Tile => f.tiles[cellKey(x, y)] ?? (y >= STRIDE ? 'void' : 'ground');
 export const inMap = (f: Floor, x: number, y: number) => x >= 0 && y >= 0 && x < f.w && y < f.h;
-export const isIndoor = (t: Tile) => t === 'floor' || t === 'raised';
+export const isIndoor = (t: Tile) => t === 'floor' || t === 'raised' || t === 'lift';
+export const isSolid = (t: Tile) => t === 'wall' || t === 'xwall' || t === 'void';
 export const isDoor = (t: Tile) => t === 'door' || t === 'smartdoor';
 
 /** A rectangular room: walls on the border, floor inside. */
@@ -38,12 +40,17 @@ export function isPath(f: Floor, x: number, y: number): boolean {
   return false;
 }
 
-/** Can this kind of device stand on this cell? Everything goes indoors. */
-export function placementError(f: Floor, kind: DeviceKind, x: number, y: number): string | null {
-  if (!inMap(f, x, y)) return 'Outside the plot.';
+/** Can this kind of device stand on this cell? Inside a building you own, on its floor. */
+export function placementError(s: Pick<WorldState, 'floor' | 'buildings'>, kind: DeviceKind, x: number, y: number): string | null {
+  const f = s.floor;
+  if (!inMap(f, x, y)) return 'That is off the map.';
   if (inParking(f, x, y)) return 'The parking lot is a no-build zone.';
   const t = tileAt(f, x, y);
-  return isIndoor(t) ? null : 'Devices go on a floor tile inside the building. Lay floor with the Build tools first.';
+  const b = buildingAt(s.buildings ?? {}, x, y);
+  if (b && !b.owned) return `${b.name} isn't yours${b.forSale ? `. It's for sale: $${b.price.toLocaleString()}` : ''}.`;
+  if (t === 'lift') return 'That is the lift.';
+  if (!b && Object.keys(s.buildings ?? {}).length) return kind === 'tower' ? null : 'Devices go inside a building you own.';
+  return isIndoor(t) ? null : 'Devices go on a floor tile. Lay floor with the Build tools first.';
 }
 
 /** Wrap an existing layout (old saves, the example) in a building. */
@@ -74,7 +81,7 @@ export function walkable(f: Floor, env: PathEnv, who: Mover, x: number, y: numbe
   if (env.allow?.has(k)) return true;
   if (env.blocked.has(k)) return false;
   const t = tileAt(f, x, y);
-  if (t === 'wall') return false;
+  if (isSolid(t)) return false;
   if (t === 'smartdoor') {
     const st = env.doors[k]?.state ?? 'open';
     if (st === 'sealed') return false;
@@ -92,14 +99,21 @@ export function findPath(f: Floor, env: PathEnv, who: Mover, from: GridPos, goal
   const startK = cellKey(from.gx, from.gy);
   if (goalSet.has(startK)) return [];
   const h = (x: number, y: number) => Math.min(...goals.map((g) => Math.max(Math.abs(g.gx - x), Math.abs(g.gy - y))));
-  const open: { k: string; x: number; y: number; g: number; f: number }[] = [{ k: startK, x: from.gx, y: from.gy, g: 0, f: h(from.gx, from.gy) }];
+  type Node = { k: string; x: number; y: number; g: number; f: number };
+  const open: Node[] = [];
+  const push = (n: Node) => { open.push(n); let i = open.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (open[p]!.f <= n.f) break; open[i] = open[p]!; i = p; } open[i] = n; };
+  const pop = (): Node => {
+    const top = open[0]!, last = open.pop()!;
+    if (open.length) { let i = 0; for (;;) { const l = 2 * i + 1, r2 = l + 1; let m = i; if (l < open.length && open[l]!.f < (m === i ? last.f : open[m]!.f)) m = l; if (r2 < open.length && open[r2]!.f < (m === i ? last.f : open[m]!.f)) m = r2; if (m === i) break; open[i] = open[m]!; i = m; } open[i] = last; }
+    return top;
+  };
+  push({ k: startK, x: from.gx, y: from.gy, g: 0, f: h(from.gx, from.gy) });
   const came = new Map<string, string>();
   const gScore = new Map<string, number>([[startK, 0]]);
   let guard = 0;
-  while (open.length && guard++ < 4000) {
-    let bi = 0;
-    for (let i = 1; i < open.length; i++) if (open[i]!.f < open[bi]!.f) bi = i;
-    const cur = open.splice(bi, 1)[0]!;
+  while (open.length && guard++ < 30000) {
+    const cur = pop();
+    if (cur.g > (gScore.get(cur.k) ?? Infinity)) continue;
     if (goalSet.has(cur.k)) {
       const out: GridPos[] = [];
       let k: string | undefined = cur.k;
@@ -117,7 +131,21 @@ export function findPath(f: Floor, env: PathEnv, who: Mover, from: GridPos, goal
       if (g >= (gScore.get(nk) ?? Infinity)) continue;
       gScore.set(nk, g);
       came.set(nk, cur.k);
-      open.push({ k: nk, x: nx, y: ny, g, f: g + h(nx, ny) });
+      push({ k: nk, x: nx, y: ny, g, f: g + h(nx, ny) });
+    }
+    // the lift: the same cell on the other storeys
+    if (tileAt(f, cur.x, cur.y) === 'lift') {
+      const base = cur.y % STRIDE;
+      for (let z = 0; z * STRIDE < f.h; z++) {
+        const ny = base + z * STRIDE;
+        if (ny === cur.y || tileAt(f, cur.x, ny) !== 'lift') continue;
+        const nk = cellKey(cur.x, ny);
+        const g = cur.g + 4 + Math.abs(ny - cur.y) / STRIDE * 2;
+        if (g >= (gScore.get(nk) ?? Infinity)) continue;
+        gScore.set(nk, g);
+        came.set(nk, cur.k);
+        push({ k: nk, x: cur.x, y: ny, g, f: g + h(cur.x, ny) });
+      }
     }
   }
   return null;
@@ -143,7 +171,9 @@ export function watched(s: WorldState, at: GridPos, radius = SIGHT_RADIUS): bool
 /** Outside cells on the map edge where strangers can appear. */
 export function edgeSpawns(f: Floor): GridPos[] {
   const out: GridPos[] = [];
-  for (let x = 0; x < f.w; x++) for (const y of [0, f.h - 1]) if (tileAt(f, x, y) === 'ground') out.push({ gx: x, gy: y });
-  for (let y = 0; y < f.h; y++) for (const x of [0, f.w - 1]) if (tileAt(f, x, y) === 'ground') out.push({ gx: x, gy: y });
+  const h = f.h > STRIDE ? CITY_H : f.h;     // the city's edges, not the upper storeys
+  const outside = (t: Tile) => t === 'ground' || t === 'sidewalk' || t === 'street';
+  for (let x = 0; x < f.w; x++) for (const y of [0, h - 1]) if (outside(tileAt(f, x, y))) out.push({ gx: x, gy: y });
+  for (let y = 0; y < h; y++) for (const x of [0, f.w - 1]) if (outside(tileAt(f, x, y))) out.push({ gx: x, gy: y });
   return out;
 }

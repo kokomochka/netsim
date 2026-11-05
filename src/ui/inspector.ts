@@ -35,11 +35,12 @@ import {
   overlapCheck, serverGatewayCheck, checkAddr,
 } from '../state/validate';
 import {
-  addRole, allFqdns, buyBiggerBlock, nextBlockUpgrade, editRole, setRoleLinks, setPortMedia, setServiceFqdn, buyPart, deleteCable, deleteDevice, editDevice, genId, publicIps, removeRole, rotateDevice, runtime,
+  addRole, allFqdns, buyBiggerBlock, moveToFloor, nextBlockUpgrade, editRole, setRoleLinks, setPortMedia, setServiceFqdn, buyPart, deleteCable, deleteDevice, editDevice, genId, publicIps, removeRole, rotateDevice, runtime,
   select, setCableType, setServicePublicIp, setUplinkTier, toast, ui, world, cancelUpgrade, onBench, pendingParts, setCert,
 } from '../state/world';
 import { cableGlyph, kindCss, kindGlyph } from './glyphs';
 import { baseStyle } from './styles';
+import { buildingAt, levelOf } from '../state/city';
 import { onThemeChange } from './theme';
 
 const SIDE_NAME = { N: 'top', E: 'right', S: 'bottom', W: 'left' } as const;
@@ -1781,6 +1782,12 @@ export class NsInspector extends HTMLElement {
 
     const footer = document.createElement('footer');
     footer.appendChild(btn('Rotate ports', () => rotateDevice(d.id), '', 'Turn the ports 90° clockwise (R)'));
+    const home = buildingAt(s.buildings, d.gridPos.gx, d.gridPos.gy);
+    if (home && home.floors > 1 && d.kind !== 'uplink' && d.kind !== 'badge' && !(d.kind === 'switch' && d.stack)) {
+      const here = levelOf(d.gridPos.gy);
+      const opts = [{ value: '', label: 'Move to floor…' }, ...Array.from({ length: home.floors }, (_, z) => z).filter((z) => z !== here).map((z) => ({ value: String(z), label: z === 0 ? 'Ground floor' : `Floor ${z}` }))];
+      footer.appendChild(makeSelect('dev-floor', opts, '', 'Move to floor', (v) => { if (!v) return; const e = moveToFloor(d.id, Number(v)); if (e) { toast(e, 'error'); this.schedule(); } else toast(`${d.name} moved. Its cables came off.`); }));
+    }
     footer.appendChild(el('span', 'grow'));
     if (d.kind === 'badge') footer.appendChild(btn('Make it a plain door', () => deleteDevice(d.id), 'danger'));
     else if (d.kind !== 'uplink') footer.appendChild(btn(`Delete ${def.label.toLowerCase()}`, () => deleteDevice(d.id), 'danger'));

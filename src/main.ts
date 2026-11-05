@@ -45,7 +45,7 @@ async function boot(): Promise<void> {
     install(newWorld(), false);
     renderer.centerOnUplink();
     document.querySelector('ns-goals')?.setAttribute('open', '');
-    toast('Welcome. Your first task is under Goals; Game → Open example network shows a finished setup.');
+    toast('Welcome to your new office. The first visitors will walk you through it; your goals are under Goals.');
   }
 
   attachInput(renderer, isUiBusy);

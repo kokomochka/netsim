@@ -15,7 +15,7 @@ import type { CableType, DeviceKind, DeviceOf, RoleKind, ServerParts, WorldState
 import { makeEngineer, newWorld } from './world';
 
 export function showcaseWorld(): WorldState {
-  const s = newWorld();
+  const s = newWorld(true);
   // scripted with the documentation block: keep it instead of a random one
   for (const d of Object.values(s.devices)) if (d.kind === 'uplink') { d.publicSubnet = UPLINK_START.publicSubnet; d.uplinkIp = UPLINK_START.uplinkIp; }
   s.meta.sandbox = true;

@@ -9,7 +9,8 @@ import { doorStates, smartDoorsLocked } from '../sim/staff';
 import { inParking, isIndoor, isPath, placementError, tileAt } from '../state/floor';
 import { flowShape } from '../sim/net';
 import { layoutCables } from './cablelayout';
-import { IsoScene, isoProject, isoUnproject } from './iso';
+import { VolumeScene, drawGround, floorTileColor } from './volume';
+import { STRIDE, buildingAt, levelOf } from '../state/city';
 import { clearIconCache, deviceContext } from './icons';
 import { CABLE_COLOR, COLORS, KIND_COLOR } from './palette';
 
@@ -78,7 +79,7 @@ export class Renderer {
   /** upright text and badges, placed at projected points */
   private labels = new Container();
   private deviceLabels = new Container();
-  private iso = new IsoScene();
+  private iso = new VolumeScene();
   private view: 'top' | 'iso' = 'top';
   private floorG = new Graphics();
   private doorG = new Graphics();
@@ -118,7 +119,7 @@ export class Renderer {
     this.plane.addChild(this.planeInner);
     this.planeInner.addChild(this.floorG, this.roomTint, this.doorG, this.cables, this.carriers, this.devices, this.ports, this.people, this.overlay, this.ghost);
     this.labels.addChild(this.healthBadges, this.deviceLabels, this.roomLabels, this.peopleLabels);
-    this.view = ui.get().view ?? 'top';
+    this.view = 'iso';   // one view now: top-down with volume
     this.ghost.addChild(this.ghostIcon, this.ghostMark);
     this.ghost.alpha = 0.55;
     this.ghost.visible = false;
@@ -131,7 +132,7 @@ export class Renderer {
       this.applyCamera();
       if (reason !== 'camera') this.redrawWorld();
     });
-    ui.subscribe((u) => { if ((u.view ?? 'top') !== this.view) this.setView(u.view ?? 'top'); else this.redrawInteractive(); });
+    ui.subscribe((u) => { if ((u.level ?? 0) !== this.iso.level) this.setLevel(u.level ?? 0); else this.redrawInteractive(); });
     pointer.subscribe(() => this.redrawInteractive());
     this.app.renderer.on('resize', () => this.drawGrid());
     this.app.ticker.add(() => { const now = performance.now(); this.drawStreams(now); if (this.view === 'iso') { this.iso.animate(world.get(), now); this.iso.drawPeople(world.get(), now); } });
@@ -181,42 +182,40 @@ export class Renderer {
   screenToWorld(sx: number, sy: number): Vec2 {
     const c = world.get().camera;
     const x = (sx - c.x) / c.scale, y = (sy - c.y) / c.scale;
-    return this.view === 'iso' ? isoUnproject(x, y) : { x, y };
+    return { x, y };
   }
 
   /** World floor point → camera-space point (identity in the top-down view). */
   project(x: number, y: number): Vec2 {
-    return this.view === 'iso' ? isoProject(x, y) : { x, y };
+    return { x, y };
   }
 
   get isIso(): boolean { return this.view === 'iso'; }
 
   /** In 3D the boxes stand above their floor cell: pick them by what is drawn. */
   pickDevice(sx: number, sy: number): string | null {
-    if (this.view !== 'iso') return null;
     const c = world.get().camera;
     return this.iso.pick((sx - c.x) / c.scale, (sy - c.y) / c.scale);
   }
 
   /** Switch between the flat plan and the isometric view, keeping the same spot in the middle. */
-  private setView(v: 'top' | 'iso'): void {
-    const { w, h } = this.screenSize;
-    const mid = this.screenToWorld(w / 2, h / 2);
-    this.view = v;
-    const p = this.project(mid.x, mid.y);
+  private setLevel(level: number): void {
     const c = world.get().camera;
+    const from = this.iso.level;
+    this.iso.level = level;
     this.floorKey = '';
     this.iso.clear();
-    world.update((wd) => { wd.camera = { scale: c.scale, x: w / 2 - p.x * c.scale, y: h / 2 - p.y * c.scale }; }, 'camera');
+    // same spot on the other storey: its band is (level - from) × STRIDE rows away
+    world.update((wd) => { wd.camera = { scale: c.scale, x: c.x, y: c.y - (level - from) * STRIDE * CELL * c.scale }; }, 'camera');
     this.redrawWorld();
   }
+
+  get level(): number { return this.iso.level; }
 
   /** Where labels hang under a device, and where its badges float. */
   private anchor(d: Device): { x: number; y: number; top: number } {
     const cx = (d.gridPos.gx + 0.5) * CELL, cy = (d.gridPos.gy + 0.5) * CELL;
-    if (this.view !== 'iso') return { x: cx, y: cy, top: cy - BODY / 2 };
-    const p = isoProject(cx, cy);
-    return { x: p.x, y: p.y - 8, top: p.y - this.iso.heightOf(d.kind) - 22 };
+    return { x: cx, y: cy, top: cy - BODY / 2 - this.iso.heightOf(d.kind) + 2 };
   }
 
   get screenSize(): { w: number; h: number } {
@@ -227,11 +226,10 @@ export class Renderer {
     const c = world.get().camera;
     this.worldLayer.position.set(c.x, c.y);
     this.worldLayer.scale.set(c.scale);
-    const iso = this.view === 'iso';
-    this.plane.scale.set(1, iso ? 0.5 : 1);
-    this.planeInner.rotation = iso ? Math.PI / 4 : 0;
-    this.iso.stand.visible = iso;
-    this.devices.visible = !iso;
+    this.plane.scale.set(1, 1);
+    this.planeInner.rotation = 0;
+    this.iso.stand.visible = true;
+    this.devices.visible = false;
     const showLabels = c.scale >= 0.45;
     for (const [id, v] of this.views) {
       const door = world.get().devices[id]?.kind === 'badge';
@@ -280,118 +278,33 @@ export class Renderer {
   private drawFloor(): void {
     const s = world.get();
     const f = s.floor;
-    const towers = Object.values(s.devices).filter((d) => d.kind === 'tower').map((d) => `${d.gridPos.gx},${d.gridPos.gy}`).join(';');
-    const key = `${this.view}|${JSON.stringify(f.tiles)}|${JSON.stringify(f.parking ?? null)}|${towers}|${JSON.stringify(doorStates())}`;
+    const L = this.iso.level;
+    const owned = Object.values(s.buildings).filter((b) => b.owned).map((b) => `${b.id}:${b.floors}`).join(',');
+    const key = `${L}|${owned}|${JSON.stringify(f.tiles)}|${JSON.stringify(doorStates())}`;
     if (key === this.floorKey) return;
     this.floorKey = key;
     const g = this.floorG;
     g.clear();
-    const towerCells = new Set(towers.split(';'));
-    // outdoors: a paved footpath right around the building, grass with trees further out
-    const B = 8; // decorative grounds beyond the plot on every side
-    for (let x = -B; x < f.w + B; x++) {
-      for (let y = -B; y < f.h + B; y++) {
-        if (tileAt(f, x, y) !== 'ground' || inParking(f, x, y)) continue;
-        const px = x * CELL, py = y * CELL;
-        if (isPath(f, x, y)) {
-          g.rect(px, py, CELL, CELL).fill({ color: COLORS.path });
-          g.rect(px + 0.5, py + 0.5, CELL / 2, CELL / 2).stroke({ width: 1, color: COLORS.pathSeam });
-          g.rect(px + CELL / 2 + 0.5, py + CELL / 2 + 0.5, CELL / 2 - 1, CELL / 2 - 1).stroke({ width: 1, color: COLORS.pathSeam });
-          continue;
-        }
-        const h = hash(x, y);
-        g.rect(px, py, CELL, CELL).fill({ color: h % 3 === 0 ? COLORS.grassDark : COLORS.grass });
-        if (towerCells.has(`${x},${y}`) || this.view === 'iso') continue;
-        if (h % 100 < 22) {
-          const ox = px + 12 + (h >> 8) % 24, oy = py + 12 + (h >> 12) % 24, r = 9 + (h >> 16) % 6;
-          g.circle(ox + 3, oy + 4, r).fill({ color: COLORS.trunkShadow, alpha: 0.45 });
-          g.circle(ox, oy, r).fill({ color: COLORS.tree });
-          g.circle(ox - r * 0.3, oy - r * 0.3, r * 0.55).fill({ color: COLORS.treeLight, alpha: 0.6 });
-        } else if (h % 100 < 30) {
-          g.circle(px + 10 + (h >> 9) % 28, py + 10 + (h >> 13) % 28, 2.2).fill({ color: COLORS.treeLight, alpha: 0.5 });
-        }
+    drawGround(g, s, L, (x, y) => tileAt(f, x, y), (x, gy) => {
+      // a building cell: draw the storey's floor only if it is one of yours
+      const b = buildingAt(s.buildings, x, gy);
+      if (!b || !b.owned || levelOf(gy) >= b.floors) return;
+      const t = tileAt(f, x, gy);
+      const c = floorTileColor(t);
+      if (!c) return;
+      const px = x * CELL, py = gy * CELL;
+      g.rect(px, py, CELL, CELL).fill({ color: c.fill });
+      g.rect(px + 0.5, py + 0.5, CELL - 1, CELL - 1).stroke({ width: 1, color: c.seam });
+      if (c.dots !== undefined) for (const a of [12, 24, 36]) for (const bb of [12, 24, 36]) g.circle(px + a, py + bb, 1).fill({ color: c.dots, alpha: 0.8 });
+      if (t === 'lift') {
+        g.rect(px + 6, py + 6, CELL - 12, CELL - 12).stroke({ width: 2, color: 0x4d535b });
+        g.moveTo(px + CELL / 2, py + 9).lineTo(px + CELL / 2, py + CELL - 9).stroke({ width: 1.5, color: 0x4d535b });
+        g.poly([px + CELL / 2 - 5, py + 16, px + CELL / 2, py + 11, px + CELL / 2 + 5, py + 16]).fill({ color: 0xf0f0f0 });
+        g.poly([px + CELL / 2 - 5, py + CELL - 16, px + CELL / 2, py + CELL - 11, px + CELL / 2 + 5, py + CELL - 16]).fill({ color: 0xf0f0f0 });
       }
-    }
-    // parking lot: decoration, nothing can be built here
-    const pk = f.parking;
-    if (pk) {
-      const px0 = pk.x0 * CELL, py0 = pk.y0 * CELL, pw = (pk.x1 - pk.x0 + 1) * CELL, ph = (pk.y1 - pk.y0 + 1) * CELL;
-      g.rect(px0, py0, pw, ph).fill({ color: COLORS.asphalt });
-      g.rect(px0 + 2, py0 + 2, pw - 4, ph - 4).stroke({ width: 2, color: COLORS.stall, alpha: 0.5 });
-      const rows = [pk.y0 + 0.15, pk.y1 - 1.35].filter((r, i, a) => a.indexOf(r) === i && r >= pk.y0);
-      const carColors = [0xfa896b, 0x5d87ff, 0xffffff, 0x49beff, 0xffae1f, 0xa6b4c8, 0x9b8cf5];
-      for (const row of rows) {
-        const top = row * CELL;
-        for (let x = pk.x0; x <= pk.x1; x++) {
-          const sx = x * CELL;
-          g.moveTo(sx + 1, top).lineTo(sx + 1, top + CELL * 1.2).stroke({ width: 2, color: COLORS.stall, alpha: 0.7 });
-          const h = hash(x, Math.round(row * 10));
-          if (h % 100 < 55) {
-            const c = carColors[h % carColors.length]!;
-            g.roundRect(sx + 9, top + 6, CELL - 18, CELL * 1.2 - 12, 7).fill({ color: COLORS.carShadow, alpha: 0.12 });
-            g.roundRect(sx + 7, top + 4, CELL - 18, CELL * 1.2 - 12, 7).fill({ color: c });
-            g.roundRect(sx + 11, top + 14, CELL - 26, 12, 3).fill({ color: 0x3b4a63, alpha: 0.55 });
-            g.roundRect(sx + 11, top + CELL * 1.2 - 26, CELL - 26, 8, 3).fill({ color: 0x3b4a63, alpha: 0.45 });
-          }
-        }
-        g.moveTo((pk.x1 + 1) * CELL - 1, top).lineTo((pk.x1 + 1) * CELL - 1, top + CELL * 1.2).stroke({ width: 2, color: COLORS.stall, alpha: 0.7 });
-      }
-      const midY = py0 + ph / 2;
-      for (let x = px0 + 12; x < px0 + pw - 24; x += 36) g.rect(x, midY - 1.5, 18, 3).fill({ color: COLORS.stall, alpha: 0.55 });
-      g.poly([px0 + pw - 30, midY - 8, px0 + pw - 14, midY, px0 + pw - 30, midY + 8]).fill({ color: COLORS.stall, alpha: 0.55 });
-    }
-    // plot fence
-    const fence = (x0: number, y0: number, x1: number, y1: number) => {
-      const len = Math.hypot(x1 - x0, y1 - y0);
-      for (let t = 0; t < len; t += 14) {
-        const a0 = t / len, a1 = Math.min(1, (t + 8) / len);
-        g.moveTo(x0 + (x1 - x0) * a0, y0 + (y1 - y0) * a0).lineTo(x0 + (x1 - x0) * a1, y0 + (y1 - y0) * a1);
-      }
-    };
-    const W = f.w * CELL, H = f.h * CELL;
-    fence(0, 0, W, 0); fence(W, 0, W, H); fence(W, H, 0, H); fence(0, H, 0, 0);
-    g.stroke({ width: 2, color: COLORS.fence, alpha: 0.6 });
-    const locked = smartDoorsLocked(s);
-    this.lastDoorState = locked;
-    const tiles = Object.entries(f.tiles).map(([k, t]) => { const [x, y] = k.split(',').map(Number); return { x: x!, y: y!, t }; });
-    // floors first
-    for (const { x, y, t } of tiles) {
-      const px = x * CELL, py = y * CELL;
-      if (t === 'wall' || t === 'vent') {
-        g.rect(px, py, CELL, CELL).fill({ color: COLORS.floor });
-      } else if (t === 'floor' || t === 'door' || t === 'smartdoor') {
-        g.rect(px, py, CELL, CELL).fill({ color: COLORS.floor });
-        g.rect(px + 0.5, py + 0.5, CELL - 1, CELL - 1).stroke({ width: 1, color: COLORS.floorSeam });
-      } else if (t === 'raised') {
-        g.rect(px, py, CELL, CELL).fill({ color: COLORS.raised });
-        g.rect(px + 1, py + 1, CELL - 2, CELL - 2).stroke({ width: 1.5, color: COLORS.raisedSeam });
-        for (const a of [12, 24, 36]) for (const b of [12, 24, 36]) g.circle(px + a, py + b, 1).fill({ color: COLORS.raisedDot, alpha: 0.7 });
-      }
-    }
-    // walls join their neighbours so rooms read as solid outlines
-    const isWallish = (x: number, y: number) => { const t = f.tiles[`${x},${y}`]; return t === 'wall' || t === 'door' || t === 'smartdoor' || t === 'vent'; };
-    const T = 10;
-    if (this.view === 'iso') { this.iso.buildStatic(s, (x, y) => isPath(f, x, y), (x, y) => tileAt(f, x, y), (x, y) => inParking(f, x, y)); return; }
-    for (const { x, y, t } of tiles) {
-      if (t !== 'wall' && t !== 'vent') continue;
-      const cx = x * CELL + CELL / 2, cy = y * CELL + CELL / 2;
-      g.rect(cx - T / 2, cy - T / 2, T, T).fill({ color: COLORS.wall });
-      if (isWallish(x + 1, y)) g.rect(cx, cy - T / 2, CELL / 2 + 0.5, T).fill({ color: COLORS.wall });
-      if (isWallish(x - 1, y)) g.rect(cx - CELL / 2 - 0.5, cy - T / 2, CELL / 2 + 0.5, T).fill({ color: COLORS.wall });
-      if (isWallish(x, y + 1)) g.rect(cx - T / 2, cy, T, CELL / 2 + 0.5).fill({ color: COLORS.wall });
-      if (isWallish(x, y - 1)) g.rect(cx - T / 2, cy - CELL / 2 - 0.5, T, CELL / 2 + 0.5).fill({ color: COLORS.wall });
-    }
-    for (const { x, y, t } of tiles) {
-      if (t !== 'vent') continue;
-      const px = x * CELL, py = y * CELL;
-      const horiz = isWallish(x - 1, y) || isWallish(x + 1, y);
-      g.roundRect(px + 8, py + 8, CELL - 16, CELL - 16, 4).fill({ color: COLORS.ventFill }).stroke({ width: 2, color: KIND_COLOR.ac });
-      for (let i = 0; i < 4; i++) {
-        if (horiz) g.moveTo(px + 13 + i * 7, py + 12).lineTo(px + 13 + i * 7, py + CELL - 12);
-        else g.moveTo(px + 12, py + 13 + i * 7).lineTo(px + CELL - 12, py + 13 + i * 7);
-      }
-      g.stroke({ width: 1.5, color: KIND_COLOR.ac, alpha: 0.8 });
-    }
+    });
+    this.iso.buildStatic(s, (x, y) => tileAt(f, x, y));
+    this.lastDoorState = smartDoorsLocked(s);
   }
 
   private doorOpen = new Map<string, number>();
@@ -445,6 +358,8 @@ export class Renderer {
     g.clear();
     const seen = new Set<string>();
     for (const r of runtime.rooms) {
+      const [rx, ry] = (r.cells[0] ?? '0,0').split(',').map(Number) as [number, number];
+      if (!buildingAt(s.buildings, rx, ry)?.owned) continue;
       const t = s.climate.rooms[r.key] ?? s.climate.outside;
       const hot = Math.max(0, Math.min(1, (t - 26) / 30));
       const cold = Math.max(0, Math.min(1, (20 - t) / 8));
@@ -467,7 +382,7 @@ export class Renderer {
       if (lab.text !== txt) lab.text = txt;
       lab.style.fill = t > 40 ? COLORS.healthBad : t > 30 ? COLORS.healthWarn : COLORS.label;
       const lp = this.project(mx * CELL + 6, my * CELL + 6);
-      lab.position.set(lp.x, lp.y - (this.view === 'iso' ? 8 : 3));
+      lab.position.set(lp.x, lp.y - 3);
     }
     for (const [k, t] of this.roomLabelViews) if (!seen.has(k)) { t.destroy(); this.roomLabelViews.delete(k); }
   }
@@ -490,7 +405,7 @@ export class Renderer {
       if (t.text !== text) t.text = text;
       // x, y are floor coordinates of the label point in the flat plan
       const lp = this.project(x, y);
-      t.position.set(lp.x, this.view === 'iso' ? lp.y - 30 : lp.y);
+      t.position.set(lp.x, lp.y - 30);
     };
     const iso = this.view === 'iso';
     for (const e of Object.values(s.staff.engineers)) {
@@ -678,14 +593,14 @@ export class Renderer {
     if (u.tool.mode === 'place' && p.hoverCell) {
       ghostKind = u.tool.kind;
       ghostCell = p.hoverCell;
-      ghostOk = !deviceAtCell(s, ghostCell.gx, ghostCell.gy) && !placementError(s.floor, u.tool.kind, ghostCell.gx, ghostCell.gy);
+      ghostOk = !deviceAtCell(s, ghostCell.gx, ghostCell.gy) && !placementError(s, u.tool.kind, ghostCell.gx, ghostCell.gy);
     } else if (p.dragGhost) {
       const d = s.devices[p.dragGhost.deviceId];
       if (d) {
         ghostKind = d.kind;
         ghostCell = p.dragGhost.cell;
         const other = deviceAtCell(s, ghostCell.gx, ghostCell.gy);
-        ghostOk = (!other || other.id === d.id) && !placementError(s.floor, d.kind, ghostCell.gx, ghostCell.gy);
+        ghostOk = (!other || other.id === d.id) && !placementError(s, d.kind, ghostCell.gx, ghostCell.gy);
       }
     }
     if (ghostKind && ghostCell) {
@@ -891,12 +806,12 @@ export class Renderer {
       const by = an.top + 4;
       if (d.compromised) {
         const pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.006);
-        if (this.view === 'iso') hg.ellipse(an.x, an.y + 8, BODY * 0.6, BODY * 0.3).stroke({ width: 2, color: COLORS.strangerRim, alpha: 0.4 + 0.5 * pulse });
+        if (true) hg.ellipse(an.x, an.y + BODY / 2, BODY * 0.7, BODY * 0.3).stroke({ width: 2, color: COLORS.strangerRim, alpha: 0.4 + 0.5 * pulse });
         else hg.roundRect(bx - 8, by - 8, BODY + 8, BODY + 8, 8).stroke({ width: 2, color: COLORS.strangerRim, alpha: 0.4 + 0.5 * pulse });
         hg.circle(bx, by, 6).fill({ color: COLORS.strangerRim });
         hg.moveTo(bx - 3, by - 3).lineTo(bx + 3, by + 3).moveTo(bx + 3, by - 3).lineTo(bx - 3, by + 3).stroke({ width: 1.8, color: COLORS.plate });
       } else if (d.sw && d.sw.patch < s.staff.release) {
-        const ty = this.view === 'iso' ? by : by + BODY - 8;
+        const ty = by;
         hg.circle(bx, ty, 5).fill({ color: COLORS.plate, alpha: 0.95 });
         hg.poly([bx, ty - 4, bx + 3.5, ty + 1, bx - 3.5, ty + 1]).fill({ color: COLORS.healthWarn });
       }

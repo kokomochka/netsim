@@ -5,12 +5,14 @@ import { uptimePercent } from '../sim/engine';
 import { DEVICE_DEFS } from '../state/devices';
 import { ENGINEER_HIRE, ENGINEER_SALARY } from '../balance';
 import { engineerActivity, smartDoorsLocked } from '../sim/staff';
-import { addPublicAddr, buyDomain, dropDomain, editDomain, fireEngineer, hireEngineer, onToast, publicIps, removePublicAddr, runtime, toast, togglePublicService, ui, world, type ToastKind } from '../state/world';
+import { addPublicAddr, buyBuilding, buyDomain, dropDomain, editDomain, fireEngineer, hireEngineer, onToast, publicIps, removePublicAddr, runtime, toast, togglePublicService, ui, world, type ToastKind } from '../state/world';
 import { DOMAIN_RENEWAL, REGISTRAR_DNS_FEE, TLDS } from '../balance';
 import { resolvePublic } from '../sim/dns';
 import { buildCtx } from '../sim/net';
 import { knownProblems, masters, ownerOfIp, targetsOf } from '../sim/monitor';
-import type { Device } from '../state/types';
+import type { Building, Device } from '../state/types';
+import { STRIDE } from '../state/city';
+import { CELL } from '../balance';
 
 type Tab = 'goals' | 'staff' | 'domains' | 'monitoring' | 'events';
 import { fmtTime } from './inspector';
@@ -175,7 +177,6 @@ export class NsTopbar extends HTMLElement {
           <button class="icon ghost" data-action="undo" title="Undo (Ctrl+Z)" aria-label="Undo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
           <button class="icon ghost" data-action="redo" title="Redo (Ctrl+Shift+Z)" aria-label="Redo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
         </div>
-        <button class="ghost view" data-action="view" title="Switch between 3D and the flat plan" aria-label="Switch between 3D and the flat plan"></button>
         <button class="theme ghost" data-action="theme" title="Switch light / dark mode" aria-label="Switch light / dark mode"></button>
         <div class="menu-wrap">
           <button data-action="menu" aria-haspopup="true" aria-expanded="false">Game ▾</button>
@@ -187,8 +188,6 @@ export class NsTopbar extends HTMLElement {
             <button data-action="import">Upload save file…</button>
             <input type="file" id="save-file" accept=".json,.netsim,application/json" hidden>
             <button data-action="fit">Fit view (F)</button>
-            <button data-action="example">Open example network</button>
-            <button data-action="showcase">Open showcase campus</button>
             <button data-action="new">New game</button>
           </div>
         </div>
@@ -228,10 +227,7 @@ export class NsTopbar extends HTMLElement {
     };
     paintUndo();
     onUndoChange(paintUndo);
-    const viewBtn = this.shadow.querySelector<HTMLButtonElement>('button.view')!;
-    const paintView = () => { viewBtn.textContent = ui.get().view === 'top' ? '3D' : '2D'; viewBtn.title = ui.get().view === 'top' ? 'Show the building in 3D' : 'Show the flat plan'; };
-    paintView();
-    ui.subscribe(paintView);
+
     this.shadow.addEventListener('click', (e) => {
       const t = (e.target as HTMLElement).closest('button') as HTMLButtonElement | null;
       if (t === themeBtn) { toggleTheme(); return; }
@@ -267,10 +263,6 @@ export class NsTopbar extends HTMLElement {
     this.confirming = null;
     const n = this.shadow.querySelector<HTMLButtonElement>('[data-action="new"]')!;
     n.textContent = 'New game'; n.className = '';
-    const x = this.shadow.querySelector<HTMLButtonElement>('[data-action="example"]')!;
-    x.textContent = 'Open example network'; x.className = '';
-    const sc = this.shadow.querySelector<HTMLButtonElement>('[data-action="showcase"]')!;
-    sc.textContent = 'Open showcase campus'; sc.className = '';
     const l = this.shadow.querySelector<HTMLButtonElement>('[data-action="load"]')!;
     l.textContent = 'Load slot'; l.className = '';
   }
@@ -292,12 +284,6 @@ export class NsTopbar extends HTMLElement {
       case 'staff': (document.querySelector('ns-goals') as NsGoals | null)?.show('staff'); return;
       case 'domains': (document.querySelector('ns-goals') as NsGoals | null)?.show('domains'); return;
       case 'undo': doUndo(false); return;
-      case 'view': {
-        const v = ui.get().view === 'top' ? 'iso' : 'top';
-        try { localStorage.setItem('netsim_view', v); } catch { /* fine */ }
-        ui.update((x) => { x.view = v; }, 'ui');
-        return;
-      }
       case 'redo': doUndo(true); return;
       case 'monitoring': (document.querySelector('ns-goals') as NsGoals | null)?.show('monitoring'); return;
       case 'fit': act?.fit(); this.toggleMenu(false); return;
@@ -402,6 +388,112 @@ export class NsBanner extends HTMLElement {
   }
 }
 customElements.define('ns-banner', NsBanner);
+
+// ---------- Where you are: building, storey, buying ----------
+
+const WHERE_CSS = `
+  :host { position: absolute; z-index: 14; top: 12px; left: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; max-width: calc(100% - 24px); }
+  .bar { display: flex; gap: 6px; align-items: center; padding: 6px; border-radius: 12px; background: var(--paper); box-shadow: var(--shadow); }
+  select { width: auto; max-width: 230px; font-family: var(--font-body); font-weight: 600; font-size: 13px; min-height: 32px; }
+  .floors { display: flex; gap: 2px; padding: 3px; border-radius: 9px; background: var(--well); }
+  .floors button { min-width: 34px; min-height: 28px; padding: 0 8px; border: 0; background: transparent; font-size: 12.5px; }
+  .floors button[aria-pressed="true"] { background: var(--paper); color: var(--accent); box-shadow: var(--shadow-sm); }
+  .buy { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .buy:hover { background: var(--accent-strong); color: #fff; }
+  .info { font-size: 12px; color: var(--ink-dim); padding: 0 4px; }
+`;
+
+export class NsWhere extends HTMLElement {
+  private shadow = this.attachShadow({ mode: 'open' });
+  private box!: HTMLElement;
+  private bld = '';
+  private seed = -1;
+  private last = '';
+  connectedCallback(): void {
+    this.shadow.appendChild(baseStyle());
+    const st = document.createElement('style');
+    st.textContent = WHERE_CSS;
+    this.shadow.appendChild(st);
+    this.box = document.createElement('div');
+    this.box.style.display = 'contents';
+    this.shadow.appendChild(this.box);
+    world.subscribe((_s, r) => { if (r !== 'sim' && r !== 'camera') this.render(); });
+    ui.subscribe(() => this.render());
+    this.render();
+  }
+
+  /** Centre the camera on a building's storey. */
+  private goTo(b: Building, level: number): void {
+    const cv = document.querySelector('#stage canvas') as HTMLCanvasElement | null;
+    const w = cv?.clientWidth ?? 1000, h = cv?.clientHeight ?? 700;
+    const xs = b.rects.flatMap((q) => [q.x0, q.x1 + 1]), ys = b.rects.flatMap((q) => [q.y0, q.y1 + 1]);
+    const cx = ((Math.min(...xs) + Math.max(...xs)) / 2) * CELL, cy = ((Math.min(...ys) + Math.max(...ys)) / 2 + level * STRIDE) * CELL;
+    const scale = world.get().camera.scale;
+    // the renderer moves the camera between bands itself; set the storey first, then aim
+    ui.update((u) => { u.level = level; }, 'ui');
+    world.update((wd) => { wd.camera = { scale, x: w / 2 - cx * scale, y: h / 2 - cy * scale }; }, 'camera');
+  }
+
+  private render(): void {
+    const s = world.get();
+    const bs = Object.values(s.buildings ?? {});
+    if (bs.length <= 1) { this.box.innerHTML = ''; return; }
+    // a new city (new game, load) starts at your own building
+    if (s.meta.seed !== this.seed) { this.seed = s.meta.seed; this.bld = ''; }
+    if (!s.buildings[this.bld]) this.bld = bs.find((b) => b.owned)?.id ?? bs[0]!.id;
+    const b = s.buildings[this.bld]!;
+    const level = ui.get().level ?? 0;
+    const key = `${this.bld}|${level}|${bs.map((x) => `${x.id}${x.owned ? 1 : 0}`).join()}|${Math.floor(s.economy.balance / 500)}`;
+    if (key === this.last) return;
+    this.last = key;
+    this.box.innerHTML = '';
+    const bar = document.createElement('div');
+    bar.className = 'bar';
+    const sel = document.createElement('select');
+    sel.setAttribute('aria-label', 'Building');
+    const order = [...bs].sort((a, c) => Number(c.owned) - Number(a.owned) || Number(c.forSale) - Number(a.forSale) || a.name.localeCompare(c.name));
+    let group = '';
+    for (const x of order) {
+      const g = x.owned ? 'Yours' : x.forSale ? 'For sale' : 'Neighbours';
+      if (g !== group) { const og = document.createElement('option'); og.disabled = true; og.textContent = `── ${g}`; sel.appendChild(og); group = g; }
+      const o = document.createElement('option');
+      o.value = x.id;
+      o.textContent = `${x.name} · ${x.floors} floor${x.floors === 1 ? '' : 's'}${!x.owned && x.forSale ? ` · $${x.price.toLocaleString()}` : ''}`;
+      o.selected = x.id === this.bld;
+      sel.appendChild(o);
+    }
+    sel.addEventListener('change', () => { this.bld = sel.value; const nb = world.get().buildings[sel.value]!; this.goTo(nb, Math.min(level, nb.owned ? nb.floors - 1 : 0)); sel.blur(); });
+    bar.appendChild(sel);
+    if (b.owned) {
+      const fl = document.createElement('div');
+      fl.className = 'floors';
+      fl.setAttribute('role', 'radiogroup');
+      fl.setAttribute('aria-label', 'Floor');
+      for (let z = b.floors - 1; z >= 0; z--) {
+        const btn2 = document.createElement('button');
+        btn2.textContent = z === 0 ? 'G' : String(z);
+        btn2.title = z === 0 ? 'Ground floor' : `Floor ${z}`;
+        btn2.setAttribute('aria-pressed', String(z === level));
+        btn2.addEventListener('click', () => this.goTo(b, z));
+        fl.appendChild(btn2);
+      }
+      bar.appendChild(fl);
+    } else if (b.forSale) {
+      const buy = document.createElement('button');
+      buy.className = 'buy';
+      buy.textContent = `Buy for $${b.price.toLocaleString()}`;
+      buy.addEventListener('click', () => { const err = buyBuilding(b.id); if (err) toast(err, 'error'); else { toast(`${b.name} is yours. It comes with its own internet line and addresses.`, 'good'); this.last = ''; this.render(); } });
+      bar.appendChild(buy);
+    } else {
+      const i = document.createElement('span');
+      i.className = 'info';
+      i.textContent = 'Not for sale';
+      bar.appendChild(i);
+    }
+    this.box.appendChild(bar);
+  }
+}
+customElements.define('ns-where', NsWhere);
 
 // ---------- Goals / Events drawer ----------
 

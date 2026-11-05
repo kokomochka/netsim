@@ -2,6 +2,7 @@
 // the current tool, drag pans (or moves the selected device). Two fingers:
 // pinch-zoom + pan. Wheel: zoom at cursor. Middle mouse: pan.
 import { redo, undo } from './state/undo';
+import { CITY_H, CITY_W, STRIDE, levelOf } from './state/city';
 import { BODY, CELL, ZOOM_MAX, ZOOM_MIN } from './balance';
 import { distToPolyline, nearestFreePort, portAtPoint, portPos, freePorts } from './state/geometry';
 import type { Camera, Vec2 } from './state/types';
@@ -22,7 +23,15 @@ type Gesture =
   | { kind: 'pinch'; d0: number; mid0: Vec2; cam0: Camera };
 
 export function setCamera(cam: Camera): void {
-  world.update((w) => { w.camera = cam; }, 'camera');
+  // keep the middle of the screen over the city, on the storey on show
+  const cv = document.querySelector('#stage canvas') as HTMLCanvasElement | null;
+  const w = cv?.clientWidth ?? 1000, h = cv?.clientHeight ?? 700;
+  const lvl = ui.get().level ?? 0;
+  const mx = (w / 2 - cam.x) / cam.scale, my = (h / 2 - cam.y) / cam.scale;
+  const x0 = -4 * CELL, x1 = (CITY_W + 4) * CELL, y0 = (lvl * STRIDE - 4) * CELL, y1 = (lvl * STRIDE + CITY_H + 4) * CELL;
+  const cx = Math.min(x1, Math.max(x0, mx)), cy = Math.min(y1, Math.max(y0, my));
+  const c = { scale: cam.scale, x: w / 2 - cx * cam.scale, y: h / 2 - cy * cam.scale };
+  world.update((wd) => { wd.camera = c; }, 'camera');
 }
 
 export function zoomAt(sx: number, sy: number, factor: number): void {
@@ -34,7 +43,8 @@ export function zoomAt(sx: number, sy: number, factor: number): void {
 }
 
 export function fitView(r: Renderer): void {
-  const devs = Object.values(world.get().devices);
+  const lvl = r.level;
+  const devs = Object.values(world.get().devices).filter((d) => levelOf(d.gridPos.gy) === lvl);
   const { w, h } = r.screenSize;
   const margin = Math.min(80, Math.max(20, w * 0.06));
   if (devs.length === 0) return;
@@ -110,7 +120,7 @@ export function attachInput(r: Renderer, isUiBusy: () => boolean): void {
     const dev = u.tool.mode === 'place' ? deviceAtCell(s, cell.gx, cell.gy) : devAt(sp, cell);
     switch (u.tool.mode) {
       case 'place': {
-        placeDevice(u.tool.kind, cell, u.tool.access);
+        placeDevice(u.tool.kind, cell, u.tool.access, !!u.tool.stack);
         return;
       }
       case 'select': {

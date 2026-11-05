@@ -9,8 +9,8 @@ const LIGHT = {
   groundLine: 0xdbe3ec,
   grass: 0xdcefe0,
   grassDark: 0xd4eadb,
-  tree: 0x8fcfa4,
-  treeLight: 0xc2e8cd,
+  tree: 0x3f7d3c,
+  treeLight: 0x62a253,
   trunkShadow: 0x7fa58c,
   path: 0xe2e8ef,
   pathSeam: 0xd3dbe4,
@@ -35,7 +35,7 @@ const LIGHT = {
   coldTint: 0x1e88e5,
   gridMinor: 0x5a6a85,
   gridMajor: 0x5a6a85,
-  card: 0xffffff,
+  card: 0xf3f4f5,
   plate: 0xffffff,
   plateLine: 0xe5eaef,
   label: 0x2a3547,
@@ -146,7 +146,9 @@ export const CABLE_COLOR: Record<CableType, number> = { ...CABLE_LIGHT };
 
 /** Switch the canvas palette in place. Callers must redraw (Renderer.retheme). */
 export function applyCanvasTheme(dark: boolean): void {
-  Object.assign(COLORS, dark ? DARK : LIGHT);
-  Object.assign(KIND_COLOR, dark ? KIND_DARK : KIND_LIGHT);
-  Object.assign(CABLE_COLOR, dark ? CABLE_DARK : CABLE_LIGHT);
+  // the city looks the same in light and dark mode; only the panels change
+  void dark; void DARK; void KIND_DARK; void CABLE_DARK;
+  Object.assign(COLORS, LIGHT);
+  Object.assign(KIND_COLOR, KIND_LIGHT);
+  Object.assign(CABLE_COLOR, CABLE_LIGHT);
 }

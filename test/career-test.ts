@@ -1,6 +1,7 @@
 import { initSimulation, tick } from '../src/sim/engine';
 import { addRole, connect, editDevice, newWorld, resetRuntime, runtime, testFlags, world } from '../src/state/world';
 testFlags.fixedPublicBlock = true;
+testFlags.legacyMap = true;
 resetRuntime();
 world.replace(newWorld(), 'load');
 const w = world.get();

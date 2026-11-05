@@ -1,6 +1,7 @@
 // The two stores (saved world + transient UI) and every world mutation. Phase 2.
 import { seeded } from '../rng';
-import { CERT_PRICE, CHASSIS, ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TLDS, MAX_DISKS, MAX_SERVER_PORTS, MEDIA_SWAP_PRICE, OUTSIDE_TEMP, ENGINEER_HIRE, ROLES, START_BALANCE, TILE_PRICE, UPLINK_TIER, UPTIME_BUCKETS, PLAYER_BLOCK_OCTETS, PUBLIC_BLOCK_UPGRADES, UPLINK_START } from '../balance';
+import { STRIDE, buildingAt, generateCity, levelOf, localY } from './city';
+import { CERT_PRICE, CHASSIS, ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TLDS, MAX_DISKS, MAX_SERVER_PORTS, MEDIA_SWAP_PRICE, OUTSIDE_TEMP, ENGINEER_HIRE, ROLES, START_BALANCE, TILE_PRICE, UPLINK_TIER, UPTIME_BUCKETS, PLAYER_BLOCK_OCTETS, PUBLIC_BLOCK_UPGRADES, UPLINK_START, MAP_W, MAP_H, MULTIFLOOR_SWITCH_PRICE } from '../balance';
 import { freshAchievements } from '../progress';
 import { DEVICE_DEFS, SERVER_PORT_LAYOUT, defOf } from './devices';
 import { inMap, inParking, isIndoor, placementError, starterFloor, tileAt } from './floor';
@@ -15,20 +16,21 @@ import type {
 } from './types';
 import { formatIp, parseCidr, parseIp } from './ip';
 
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 /** Test hooks: instant part deliveries, the documentation block instead of a random one. */
-export const testFlags = { instantParts: false, fixedPublicBlock: false };
+export const testFlags = { instantParts: false, fixedPublicBlock: false, legacyMap: false };
 
 export type Tool =
   | { mode: 'select' }
   | { mode: 'cable' }
-  | { mode: 'place'; kind: DeviceKind; access?: AccessKind }
+  | { mode: 'place'; kind: DeviceKind; access?: AccessKind; stack?: boolean }
   | { mode: 'build'; tile: Tile };
 
 export type Selection = { type: 'device'; id: DeviceId } | { type: 'cable'; id: CableId } | null;
 
 export interface UiState {
   view?: 'top' | 'iso';
+  level?: number;              // the storey on show (0 = street level)
   tool: Tool;
   cableType: CableType;
   selection: Selection;
@@ -79,7 +81,8 @@ export function freshRuntimeCache(): RuntimeCache {
   };
 }
 
-export function newWorld(): WorldState {
+/** A new game: a fresh random city with your office in it. `legacy` keeps the old single-room plot (examples, tests). */
+export function newWorld(legacy = testFlags.legacyMap): WorldState {
   const s: WorldState = {
     meta: { version: SCHEMA_VERSION, seed: (Math.random() * 2 ** 31) | 0, saveTimestamp: 0, playTimeTicks: 0 },
     camera: { x: 0, y: 0, scale: 1 },
@@ -96,6 +99,7 @@ export function newWorld(): WorldState {
     known: {},
     achievements: freshAchievements(),
     floor: starterFloor(),
+    buildings: {},
     staff: freshStaff(),
     climate: { rooms: {}, outside: OUTSIDE_TEMP },
     domains: {},
@@ -105,22 +109,46 @@ export function newWorld(): WorldState {
     time: { tick: 0 },
     nextId: 1,
   };
-  const id = nextId(s, 'dev');
-  s.devices[id] = DEVICE_DEFS.uplink.create(id, 'ISP Uplink', { gx: 2, gy: 6 });
-  // every new game gets its own /28 from the ISP
   const blk = testFlags.fixedPublicBlock ? { subnet: UPLINK_START.publicSubnet, gateway: UPLINK_START.uplinkIp } : randomPublicBlock(s.meta.seed);
+  if (legacy) {
+    // the old plot, wrapped in one building you own
+    s.buildings = { bld_0: { id: 'bld_0', name: 'Your office', rects: [{ x0: 0, y0: 0, x1: MAP_W - 1, y1: MAP_H - 1 }], floors: 1, front: 's', owned: true, forSale: true, price: 0, door: { gx: 8, gy: 11 }, lift: { gx: -1, gy: -1 }, uplinkId: null } };
+    const id = nextId(s, 'dev');
+    s.devices[id] = DEVICE_DEFS.uplink.create(id, 'ISP Uplink', { gx: 2, gy: 6 });
+    const up = s.devices[id]!;
+    if (up.kind === 'uplink') { up.publicSubnet = blk.subnet; up.uplinkIp = blk.gateway; }
+    s.buildings.bld_0!.uplinkId = id;
+    const sid = nextId(s, 'dev');
+    s.devices[sid] = DEVICE_DEFS.server.create(sid, 'Server-1', { gx: 6, gy: 6 });
+    const e = makeEngineer(s, 10.5, 8.5);
+    s.staff.engineers[e.id] = e;
+    return s;
+  }
+  const plan = generateCity(s.meta.seed);
+  s.floor = plan.floor;
+  s.buildings = plan.buildings;
+  const b = plan.buildings[plan.starter]!;
+  const q = b.rects[0]!;
+  // ground floor: the ISP's box by the front wall, the front desk, a first server at the back
+  const id = nextId(s, 'dev');
+  s.devices[id] = DEVICE_DEFS.uplink.create(id, 'ISP Uplink', { gx: q.x1 - 1, gy: q.y1 - 1 });
   const up = s.devices[id]!;
   if (up.kind === 'uplink') { up.publicSubnet = blk.subnet; up.uplinkIp = blk.gateway; }
+  b.uplinkId = id;
+  const rid = nextId(s, 'dev');
+  const desk = DEVICE_DEFS.desk.create(rid, 'Reception', { gx: Math.min(q.x1 - 3, b.door.gx + 2), gy: q.y1 - 2 });
+  if (desk.kind === 'desk') desk.reception = true;
+  s.devices[rid] = desk;
   const sid = nextId(s, 'dev');
-  s.devices[sid] = DEVICE_DEFS.server.create(sid, 'Server-1', { gx: 6, gy: 6 });
-  const e = makeEngineer(s, 10.5, 8.5);
+  s.devices[sid] = DEVICE_DEFS.server.create(sid, 'Server-1', { gx: q.x0 + 4, gy: q.y0 + 3 });
+  const e = makeEngineer(s, b.door.gx + 0.5, q.y1 - 1.5);
   s.staff.engineers[e.id] = e;
   return s;
 }
 
 export const world = createStore<WorldState>(newWorld());
 export const ui = createStore<UiState>({
-  view: (() => { try { return localStorage.getItem('netsim_view') === 'top' ? 'top' : 'iso'; } catch { return 'iso'; } })(),
+  level: 0,
   tool: { mode: 'select' },
   cableType: 'ethernet',
   selection: null,
@@ -166,14 +194,15 @@ export function deviceAtCell(s: WorldState, gx: number, gy: number): Device | nu
 }
 
 // ---------- mutations ----------
-export function placeDevice(kind: DeviceKind, pos: GridPos, access: AccessKind = 'cell'): DeviceId | null {
+export function placeDevice(kind: DeviceKind, pos: GridPos, access: AccessKind = 'cell', stack = false): DeviceId | null {
   const s = world.get();
   if (!DEVICE_DEFS[kind].placeable) return null;
+  if (stack && kind === 'switch') return placeStack(pos);
   if (deviceAtCell(s, pos.gx, pos.gy)) {
     toast('That cell is taken. Pick an empty one.', 'error');
     return null;
   }
-  const where = placementError(s.floor, kind, pos.gx, pos.gy);
+  const where = placementError(s, kind, pos.gx, pos.gy);
   if (where) {
     toast(where, 'error');
     return null;
@@ -200,9 +229,72 @@ export function placeDevice(kind: DeviceKind, pos: GridPos, access: AccessKind =
   return created;
 }
 
+/** A multi-floor switch: the same switch on every storey of the building, joined by a backplane. */
+function placeStack(pos: GridPos): DeviceId | null {
+  const s = world.get();
+  const b = buildingAt(s.buildings, pos.gx, pos.gy);
+  if (!b || !b.owned) { toast('A multi-floor switch goes inside a building you own.', 'error'); return null; }
+  const base = localY(pos.gy);
+  const cells: GridPos[] = [];
+  for (let z = 0; z < b.floors; z++) {
+    const c = { gx: pos.gx, gy: base + z * STRIDE };
+    if (deviceAtCell(s, c.gx, c.gy)) { toast(`Something already stands there on floor ${z === 0 ? 'G' : z}.`, 'error'); return null; }
+    const e = placementError(s, 'switch', c.gx, c.gy);
+    if (e) { toast(`Floor ${z === 0 ? 'G' : z}: ${e}`, 'error'); return null; }
+    cells.push(c);
+  }
+  const price = MULTIFLOOR_SWITCH_PRICE * b.floors;
+  if (s.economy.balance < price) { toast(`A multi-floor switch for ${b.floors} floors costs $${price}.`, 'error'); return null; }
+  let first: DeviceId | null = null;
+  world.update((w) => {
+    const stack = `stk_${w.nextId++}`;
+    const n = Object.values(w.devices).filter((x) => x.kind === 'switch' && x.stack).map((x) => x.kind === 'switch' ? x.stack : '').filter((v, i, arr) => arr.indexOf(v) === i).length + 1;
+    const name = `Riser-${n}`;
+    cells.forEach((c, z) => {
+      const id = nextId(w, 'dev');
+      const d = defOf('switch').create(id, `${name}/${z === 0 ? 'G' : z}`, { ...c });
+      if (d.kind === 'switch') d.stack = stack;
+      w.devices[id] = d;
+      first ??= id;
+    });
+    w.economy.balance -= price;
+    w.economy.totalSpent += price;
+    recomputeAllPaths(w);
+    runtime.topologyDirty = true;
+  });
+  return first;
+}
+
+/** Move a device to another storey of its building, same spot. Its cables come off. */
+export function moveToFloor(id: DeviceId, level: number): string | null {
+  const s = world.get();
+  const d = s.devices[id];
+  if (!d) return 'Gone.';
+  if (d.kind === 'uplink' || d.kind === 'badge') return 'That one stays where it is.';
+  if (d.kind === 'switch' && d.stack) return 'A multi-floor switch is already on every floor.';
+  const b = buildingAt(s.buildings, d.gridPos.gx, d.gridPos.gy);
+  if (!b || level < 0 || level >= b.floors) return 'There is no such floor.';
+  const to = { gx: d.gridPos.gx, gy: localY(d.gridPos.gy) + level * STRIDE };
+  if (deviceAtCell(s, to.gx, to.gy)) return 'That spot is taken on the other floor.';
+  const e = placementError(s, d.kind, to.gx, to.gy);
+  if (e) return e;
+  world.update((w) => {
+    for (const c of Object.values(w.cables)) if (c.a.deviceId === id || c.b.deviceId === id) delete w.cables[c.id];
+    w.devices[id]!.gridPos = to;
+    recomputeAllPaths(w);
+    runtime.topologyDirty = true;
+  });
+  return null;
+}
+
 export function deleteDevice(id: DeviceId, keepTile = false): void {
   const d = world.get().devices[id];
   if (!d) return;
+  // a multi-floor switch goes as a whole
+  if (d.kind === 'switch' && d.stack) {
+    const others = Object.values(world.get().devices).filter((x) => x.kind === 'switch' && x.stack === d.stack && x.id !== id);
+    for (const o of others) deleteDevice(o.id, keepTile);
+  }
   if (d.kind === 'badge' && !keepTile) {
     // removing a door's controller turns it back into a plain door
     world.update((w) => { w.floor.tiles[cellKey(d.gridPos.gx, d.gridPos.gy)] = 'door'; });
@@ -244,6 +336,9 @@ export function deleteDevice(id: DeviceId, keepTile = false): void {
 
 export function moveDevice(id: DeviceId, pos: GridPos): boolean {
   const s = world.get();
+  const md = s.devices[id];
+  if (md?.kind === 'switch' && md.stack) { toast('A multi-floor switch is built into the building. Delete it and place a new one instead.', 'error'); return false; }
+  if (md && levelOf(pos.gy) !== levelOf(md.gridPos.gy)) { toast('Use "Move to floor" in its panel to change floors.', 'error'); return false; }
   if (s.devices[id]?.kind === 'badge') { toast('A smart door\'s controller is built into the door.', 'error'); return false; }
   const other = deviceAtCell(s, pos.gx, pos.gy);
   if (other && other.id !== id) {
@@ -251,7 +346,7 @@ export function moveDevice(id: DeviceId, pos: GridPos): boolean {
     return false;
   }
   const mv = s.devices[id];
-  const where = mv ? placementError(s.floor, mv.kind, pos.gx, pos.gy) : null;
+  const where = mv ? placementError(s, mv.kind, pos.gx, pos.gy) : null;
   if (where) {
     toast(where, 'error');
     return false;
@@ -280,6 +375,11 @@ export function connect(a: CableEnd, b: CableEnd, type: CableType): CableId | nu
   const s = world.get();
   if (a.deviceId === b.deviceId) {
     toast('A cable needs two different devices.', 'error');
+    return null;
+  }
+  const da = s.devices[a.deviceId], db = s.devices[b.deviceId];
+  if (da && db && levelOf(da.gridPos.gy) !== levelOf(db.gridPos.gy)) {
+    toast('Cables stay on one floor. Use a multi-floor switch to go between floors.', 'error');
     return null;
   }
   const used = portUsage(s);
@@ -374,6 +474,35 @@ export function randomPublicBlock(seed = (Math.random() * 2 ** 31) | 0): { subne
   const c = Math.floor(r() * 256);
   const d = Math.floor(r() * 16) * 16;
   return { subnet: `${a}.${b}.${c}.${d}/28`, gateway: `${a}.${b}.${c}.${d + 1}` };
+}
+
+/** Buy a building: it becomes yours, with its own ISP line and public addresses. */
+export function buyBuilding(id: string): string | null {
+  const s = world.get();
+  const b = s.buildings[id];
+  if (!b || b.owned) return 'That one is already yours.';
+  if (!b.forSale) return `${b.name} is not for sale.`;
+  if (s.economy.balance < b.price) return `${b.name} costs $${b.price.toLocaleString()}.`;
+  world.update((w) => {
+    const x = w.buildings[id]!;
+    x.owned = true;
+    w.economy.balance -= x.price;
+    w.economy.totalSpent += x.price;
+    // the ISP's box goes inside the street wall, next to the door
+    const q = x.rects.find((r) => (x.front === 's' ? r.y1 : r.y0) === x.door.gy) ?? x.rects[0]!;
+    const gy = x.front === 's' ? q.y1 - 1 : q.y0 + 1;
+    let gx = x.door.gx + 1;
+    if (gx >= q.x1) gx = x.door.gx - 1;
+    const uid = nextId(w, 'dev');
+    const up = DEVICE_DEFS.uplink.create(uid, `${x.name} uplink`, { gx, gy });
+    const blk = randomPublicBlock((w.meta.seed ^ uid.length * 7919) + Object.keys(w.devices).length * 131);
+    if (up.kind === 'uplink') { up.publicSubnet = blk.subnet; up.uplinkIp = blk.gateway; }
+    w.devices[uid] = up;
+    x.uplinkId = uid;
+    recomputeAllPaths(w);
+    runtime.topologyDirty = true;
+  });
+  return null;
 }
 
 /** Next bigger public block, or null at the largest. */
@@ -798,8 +927,9 @@ export function makeEngineer(s: WorldState, x: number, y: number): Engineer {
 export function hireEngineer(): string | null {
   const s = world.get();
   if (s.economy.balance < ENGINEER_HIRE) return `Hiring costs $${ENGINEER_HIRE}`;
+  const home = Object.values(s.buildings).find((b) => b.owned);
   const door = Object.entries(s.floor.tiles).find(([, t]) => t === 'door' || t === 'smartdoor');
-  const [dx, dy] = door ? door[0].split(',').map(Number) as [number, number] : [5, 5];
+  const [dx, dy] = home && home.lift.gx >= 0 ? [home.door.gx, home.door.gy + (home.front === 's' ? 1 : -1)] : door ? door[0].split(',').map(Number) as [number, number] : [5, 5];
   world.update((w) => {
     const e = makeEngineer(w, dx + 0.5, dy + 0.5);
     w.staff.engineers[e.id] = e;

@@ -158,11 +158,14 @@ export function walkSegment(ctx: NetCtx, devId: DeviceId, port: number, tag: num
         vid = q.wire ?? 1;
         if (!trunkAllows(pin.allowed, vid)) { res.dead.push(`the trunk on ${peer.name} ${portLabel(peer, link.peerPort)} does not carry VLAN ${vid}`); continue; }
       }
-      for (const p of peer.ports) {
-        if (p.index === link.peerPort || !p.up) continue;
-        const pout = portVlan(peer, p.index);
-        if (pout.mode === 'access') { if (pout.vid === vid) queue.push({ devId: peer.id, port: p.index, parent: idx, wire: null }); }
-        else if (trunkAllows(pout.allowed, vid)) queue.push({ devId: peer.id, port: p.index, parent: idx, wire: vid === 1 ? null : vid });
+      const members = peer.stack ? Object.values(ctx.s.devices).filter((x) => x.kind === 'switch' && x.stack === peer.stack && devUp(x)) : [peer];
+      for (const m of members) {
+        for (const p of m.ports) {
+          if ((m.id === peer.id && p.index === link.peerPort) || !p.up) continue;
+          const pout = portVlan(m, p.index);
+          if (pout.mode === 'access') { if (pout.vid === vid) queue.push({ devId: m.id, port: p.index, parent: idx, wire: null }); }
+          else if (trunkAllows(pout.allowed, vid)) queue.push({ devId: m.id, port: p.index, parent: idx, wire: vid === 1 ? null : vid });
+        }
       }
     } else if (peer.kind === 'ddos_scrubber') {
       queue.push({ devId: peer.id, port: link.peerPort === 0 ? 1 : 0, parent: idx, wire: q.wire });

@@ -232,7 +232,8 @@ export const WALK_SPEED = 2.2;             // cells/s
 export const RUSH_SPEED = 4;
 export const SIGHT_RADIUS = 2;             // cells an engineer watches around them
 export const SPOT_RADIUS = 5;              // cells at which an engineer notices a stranger
-export const TILE_PRICE: Record<Tile, number> = { ground: 0, floor: 2, raised: 6, wall: 8, door: 40, smartdoor: 150, vent: 60 };
+export const TILE_PRICE: Record<Tile, number> = { ground: 0, floor: 2, raised: 6, wall: 8, door: 40, smartdoor: 150, vent: 60, xwall: 0, lift: 0, street: 0, sidewalk: 0, void: 0 };
+export const MULTIFLOOR_SWITCH_PRICE = 140;   // per floor it spans
 export const MAP_W = 40;
 export const MAP_H = 26;
 
