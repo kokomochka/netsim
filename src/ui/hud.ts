@@ -9,8 +9,10 @@ import { addPublicAddr, buyDomain, dropDomain, editDomain, fireEngineer, hireEng
 import { DOMAIN_RENEWAL, REGISTRAR_DNS_FEE, TLDS } from '../balance';
 import { resolvePublic } from '../sim/dns';
 import { buildCtx } from '../sim/net';
+import { knownProblems, masters, ownerOfIp, targetsOf } from '../sim/monitor';
+import type { Device } from '../state/types';
 
-type Tab = 'goals' | 'staff' | 'domains' | 'events';
+type Tab = 'goals' | 'staff' | 'domains' | 'monitoring' | 'events';
 import { fmtTime } from './inspector';
 import { baseStyle } from './styles';
 import { onThemeChange, theme, toggleTheme } from './theme';
@@ -159,6 +161,7 @@ export class NsTopbar extends HTMLElement {
         <div class="speeds" role="radiogroup" aria-label="Simulation speed"></div>
         <button class="goals" data-action="domains" title="Public IPs, domains and DNS">Internet</button>
         <button class="goals" data-action="staff" title="Engineers, jobs and security">Staff<span class="badge" data-el="staffcount">0</span></button>
+        <button class="goals" data-action="monitoring" data-el="monbtn" title="What your monitoring servers see" hidden>Monitoring<span class="badge" data-el="moncount">0</span></button>
         <button class="goals" data-action="goals" title="Goals, unlocks and events">Goals<span class="badge" data-el="goalcount">0</span></button>
         <button class="theme ghost" data-action="theme" title="Switch light / dark mode" aria-label="Switch light / dark mode"></button>
         <div class="menu-wrap">
@@ -265,6 +268,7 @@ export class NsTopbar extends HTMLElement {
       case 'goals': (document.querySelector('ns-goals') as NsGoals | null)?.show('goals'); return;
       case 'staff': (document.querySelector('ns-goals') as NsGoals | null)?.show('staff'); return;
       case 'domains': (document.querySelector('ns-goals') as NsGoals | null)?.show('domains'); return;
+      case 'monitoring': (document.querySelector('ns-goals') as NsGoals | null)?.show('monitoring'); return;
       case 'fit': act?.fit(); this.toggleMenu(false); return;
       case 'save': await act?.save(); this.toggleMenu(false); return;
       case 'export': this.toggleMenu(false); await act?.exportSave(); return;
@@ -306,6 +310,11 @@ export class NsTopbar extends HTMLElement {
     const tres = Object.keys(s.staff.trespassers).length;
     e.staffcount!.textContent = tres ? `${tres} intruder` : String(Object.keys(s.staff.engineers).length);
     e.staffcount!.style.background = tres ? 'var(--bad)' : '';
+    const ms = masters(s);
+    e.monbtn!.hidden = !ms.length;
+    const alerts = Object.entries(s.known ?? {}).filter(([, k]) => k.via === 'monitoring').length + Object.keys(runtime.monSilent ?? {}).length;
+    e.moncount!.textContent = String(alerts);
+    e.moncount!.style.background = alerts ? 'var(--bad)' : '';
   }
 }
 customElements.define('ns-topbar', NsTopbar);
@@ -394,6 +403,30 @@ const GOALS_CSS = `
   .unl { display: flex; flex-wrap: wrap; gap: 6px; }
   .chip { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: var(--well); color: var(--ink-faint); border: 1px solid var(--line); }
   .chip.on { border-color: transparent; background: var(--ok-soft); color: var(--ok); }
+  .mon-pick { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; font-size: 12.5px; font-weight: 600; color: var(--ink-dim); }
+  .mon-sum { display: flex; flex-wrap: wrap; gap: 6px; }
+  .mon-sum span { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--paper); border: 1px solid var(--line); color: var(--ink-dim); }
+  .mon-sum span.bad { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
+  .mon-sum span.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+  .mon-card { display: grid; gap: 8px; width: 100%; text-align: left; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper); box-shadow: var(--shadow-sm); color: var(--ink); cursor: pointer; animation: rise .25s ease-out; }
+  .mon-card:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: var(--paper); color: var(--ink); }
+  .mon-card.alert { box-shadow: inset 4px 0 0 var(--bad), var(--shadow-sm); }
+  .mon-card.warn, .mon-card.busy { box-shadow: inset 4px 0 0 var(--warn), var(--shadow-sm); }
+  .mon-card .t { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .mon-card .t b { font-size: 13.5px; }
+  .mon-card .via { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint); }
+  .mon-bars { display: grid; grid-template-columns: 58px minmax(0, 1fr) 54px; gap: 5px 8px; align-items: center; font-size: 11.5px; }
+  .mon-bars .k { color: var(--ink-dim); }
+  .mon-bars .v { font-family: var(--font-mono); font-size: 11px; text-align: right; color: var(--ink-dim); }
+  .mon-bars .bar i { background: var(--ok); transition: width .4s ease; }
+  .mon-bars .bar.warm i { background: var(--warn); }
+  .mon-bars .bar.hot i { background: var(--bad); }
+  .mon-alert, .mon-warn, .mon-ok { font-size: 12px; line-height: 1.45; padding: 6px 10px; border-radius: 8px; }
+  .mon-alert { background: var(--bad-soft); color: var(--bad); }
+  .mon-warn { background: var(--warn-soft); color: var(--warn); }
+  .mon-ok { background: var(--ok-soft); color: var(--ok); }
+  .mon-empty { font-size: 13px; line-height: 1.5; padding: 14px; border-radius: var(--radius); background: var(--paper); border: 1px dashed var(--line-strong); color: var(--ink-dim); }
+  @keyframes rise { from { opacity: 0; transform: translateY(4px); } }
   .log { display: grid; gap: 6px; font-size: 12.5px; line-height: 1.45; }
   .log div { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 8px; padding: 6px 8px; border-radius: 8px; background: var(--paper); }
   .log time { font-family: var(--font-mono); color: var(--ink-faint); font-size: 11px; }
@@ -426,7 +459,7 @@ export class NsGoals extends HTMLElement {
     st.textContent = GOALS_CSS;
     this.shadow.appendChild(st);
     const h = document.createElement('header');
-    h.innerHTML = `<div class="tabs"><button data-tab="goals">Goals</button><button data-tab="staff">Staff</button><button data-tab="domains">Internet</button><button data-tab="events">Events</button></div><button class="close ghost" aria-label="Close goals">×</button>`;
+    h.innerHTML = `<div class="tabs"><button data-tab="goals">Goals</button><button data-tab="staff">Staff</button><button data-tab="domains">Internet</button><button data-tab="monitoring" data-mon>Monitor</button><button data-tab="events">Events</button></div><button class="close ghost" aria-label="Close goals">×</button>`;
     this.shadow.appendChild(h);
     this.body = document.createElement('div');
     this.body.className = 'body';
@@ -464,13 +497,101 @@ export class NsGoals extends HTMLElement {
     real.replaceChildren(...Array.from(tmp.childNodes));
     real.scrollTop = scroll;
   }
+  private monMaster = '';
+
+  /** The monitoring console as one master sees it: only what it has polled. */
+  private renderMonitoring(): void {
+    const s = world.get();
+    const ms = masters(s);
+    const mk = <K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text = '') => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
+    if (!ms.length) { this.body.appendChild(mk('p', 'intro', 'No monitoring server yet. Give a server the Monitoring master role and list what it should poll.')); return; }
+    if (!ms.some((m) => m.id === this.monMaster)) this.monMaster = ms[0]!.id;
+    const pickRow = mk('label', 'mon-pick');
+    pickRow.appendChild(mk('span', '', 'Console of'));
+    const sel = document.createElement('select');
+    for (const m of ms) { const o = document.createElement('option'); o.value = m.id; o.textContent = `${m.name}${m.ip ? ` (${m.ip})` : ''}`; o.selected = m.id === this.monMaster; sel.appendChild(o); }
+    sel.addEventListener('change', () => { this.monMaster = sel.value; sel.blur(); this.render(); });
+    pickRow.appendChild(sel);
+    this.body.appendChild(pickRow);
+    const m = ms.find((x) => x.id === this.monMaster)!;
+    // you look at it the way your staff do: from a desk that can open its web page
+    const desks = Object.entries(runtime.consoles ?? {}).filter(([, mid]) => mid === m.id).map(([id]) => s.devices[id]?.name ?? '?');
+    if (!desks.length) {
+      this.body.appendChild(mk('div', 'mon-empty', `Can't open ${m.name}'s console. A desk has to reach it on tcp/80${m.ip ? ` (http://${m.ip})` : ''}. Cable a desk into that network or allow it through the firewall.`));
+      return;
+    }
+    const watched = Object.entries(runtime.monitored ?? {}).filter(([, mid]) => mid === m.id).map(([id]) => s.devices[id]).filter((d): d is Device => !!d);
+    // which address and method reached each device
+    const how = new Map<string, string>();
+    for (const t of targetsOf(m)) { const o = ownerOfIp(s, t.ip); if (o) how.set(o.id, `${t.method === 'agent' ? 'agent' : 'SNMP'} · ${t.ip.trim()}`); }
+    const pct = (v: number | undefined) => Math.round(Math.max(0, Math.min(1, v ?? 0)) * 100);
+    type Row = { d: Device; sev: number; card: HTMLElement };
+    const rows: Row[] = [];
+    for (const d of watched) {
+      const silent = !!runtime.monSilent?.[d.id];
+      const probs = knownProblems(s, d);
+      const card = mk('div', 'mon-card');
+      card.tabIndex = 0;
+      card.setAttribute('role', 'button');
+      const pick = () => ui.update((u) => { u.selection = { type: 'device', id: d.id }; }, 'ui');
+      card.addEventListener('click', pick);
+      card.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); pick(); } });
+      const head = mk('div', 't');
+      head.appendChild(mk('b', '', d.name));
+      head.appendChild(mk('span', 'via', d.id === m.id ? 'this server' : how.get(d.id) ?? 'seen on the path'));
+      card.appendChild(head);
+      let sev = 0;
+      if (silent) {
+        sev = 3;
+        card.appendChild(mk('div', 'mon-alert', `Not answering: ${runtime.monWhy?.[d.id]?.replace(/^[^:]+: (No answer: )?/, '') ?? 'no reply'}`));
+      } else {
+        // agents report the inside of a server; SNMP only interface traffic and health
+        const bars: [string, number, string][] = [];
+        if (d.kind === 'server') {
+          bars.push(['CPU', pct(d.usage.cpu), `${pct(d.usage.cpu)} %`], ['RAM', pct(d.usage.ram), `${pct(d.usage.ram)} %`], ['Disk', pct(d.usage.storage), `${pct(d.usage.storage)} %`], ['Network', pct(d.usage.bandwidth), `${pct(d.usage.bandwidth)} %`]);
+        } else if ('usage' in d) bars.push(['Traffic', pct(d.usage.bandwidth), `${pct(d.usage.bandwidth)} %`]);
+        if (d.temp !== undefined) bars.push(['Temp', Math.min(100, Math.round(d.temp)), `${Math.round(d.temp)} °C`]);
+        if (d.kind === 'server' && s.unlocks.monitoring) { const w = Math.max(0, ...d.hw.comps.map((c) => c.wear)); bars.push(['Wear', pct(w), `${pct(w)} %`]); }
+        const grid = mk('div', 'mon-bars');
+        for (const [k, v, txt] of bars) {
+          const hot = (k === 'Temp' ? v >= 80 : k === 'Wear' ? v >= 70 : v >= 90);
+          if (hot) sev = Math.max(sev, 1);
+          grid.appendChild(mk('span', 'k', k));
+          const bar = mk('div', `bar${hot ? ' hot' : v >= 75 && k !== 'Temp' ? ' warm' : ''}`);
+          const fill = mk('i'); fill.style.width = `${k === 'Temp' ? Math.min(100, v) : v}%`; bar.appendChild(fill);
+          grid.appendChild(bar);
+          grid.appendChild(mk('span', 'v', txt));
+        }
+        if (bars.length) card.appendChild(grid);
+        else card.appendChild(mk('div', 'mon-ok', 'Up.'));
+      }
+      for (const p of probs) {
+        sev = Math.max(sev, p.level === 'alert' ? 3 : 2);
+        card.appendChild(mk('div', p.level === 'alert' ? 'mon-alert' : 'mon-warn', `${p.msg}${p.ack ? ` · ${p.by} is on it` : ''}`));
+      }
+      card.classList.add(['ok', 'busy', 'warn', 'alert'][sev]!);
+      rows.push({ d, sev, card });
+    }
+    rows.sort((a, b) => b.sev - a.sev || a.d.name.localeCompare(b.d.name));
+    const nAlert = rows.filter((r) => r.sev === 3).length, nWarn = rows.filter((r) => r.sev === 2).length, nBusy = rows.filter((r) => r.sev === 1).length;
+    const sum = mk('div', 'mon-sum');
+    sum.innerHTML = `<span><b>${rows.length}</b> watched</span><span class="${nAlert ? 'bad' : ''}"><b>${nAlert}</b> down or failing</span><span class="${nWarn ? 'warn' : ''}"><b>${nWarn}</b> warnings</span><span class="${nBusy ? 'warn' : ''}"><b>${nBusy}</b> running hot</span>`;
+    this.body.appendChild(sum);
+    this.body.appendChild(mk('p', 'intro', `Open on ${desks.join(', ')}. Only what ${m.name} polls shows up here; add addresses to its target list to see more.`));
+    for (const r of rows) this.body.appendChild(r.card);
+    if (!rows.length) this.body.appendChild(mk('div', 'mon-empty', `${m.name} isn't hearing from anything yet. Add addresses to its poll targets.`));
+  }
+
   private renderInto(): void {
+    const mon = this.shadow.querySelector<HTMLButtonElement>('[data-mon]');
+    if (mon) mon.hidden = !masters(world.get()).length;
     for (const b of this.shadow.querySelectorAll<HTMLButtonElement>('[data-tab]')) b.setAttribute('aria-pressed', String(b.dataset.tab === this.tab));
     const s = world.get();
     const scroll = this.body.scrollTop;
     this.body.innerHTML = '';
     if (this.tab === 'staff') { this.renderStaff(); this.body.scrollTop = scroll; return; }
     if (this.tab === 'domains') { this.renderDomains(); return; }
+    if (this.tab === 'monitoring') { this.renderMonitoring(); this.body.scrollTop = scroll; return; }
     if (this.tab === 'events') {
       const log = document.createElement('div');
       log.className = 'log';
