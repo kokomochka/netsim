@@ -451,6 +451,7 @@ export class VolumeScene {
       draw(e.id, desk ? dx - 4 : e.x * CELL, desk ? dyy - BODY / 2 - 2 : e.y * CELL, lookOf(e.id), e.state === 'walking' || e.state === 'roaming' || e.state === 'chasing', seated, desk ? dx : undefined);
     }
     for (const t of Object.values(s.staff.trespassers)) draw(t.id, t.x * CELL, t.y * CELL, lookOf(t.id, true), t.state !== 'hacking', false);
+    for (const v of Object.values(s.deals?.visitors ?? {})) draw(v.id, v.x * CELL, v.y * CELL, lookOf(v.id), v.state !== 'waiting', false);
     for (const [id, g] of this.people) if (!seen.has(id)) { g.destroy(); this.people.delete(id); this.facing.delete(id); }
   }
 

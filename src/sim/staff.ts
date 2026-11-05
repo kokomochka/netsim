@@ -43,7 +43,7 @@ export function smartDoorsLocked(_s?: WorldState): boolean {
 
 export function doorStates(): RuntimeCache['doors'] { return cacheRef?.doors ?? {}; }
 
-function env(s: WorldState, allow: GridPos[] = []): PathEnv {
+export function env(s: WorldState, allow: GridPos[] = []): PathEnv {
   const blocked = new Set<string>();
   for (const d of Object.values(s.devices)) if (d.kind !== 'badge') blocked.add(cellKey(d.gridPos.gx, d.gridPos.gy));
   return { blocked, doors: cacheRef?.doors ?? {}, allow: new Set(allow.map((p) => cellKey(p.gx, p.gy))) };
@@ -51,7 +51,7 @@ function env(s: WorldState, allow: GridPos[] = []): PathEnv {
 
 const cellOf = (w: Walker): GridPos => ({ gx: Math.floor(w.x), gy: Math.floor(w.y) });
 
-function routeTo(s: WorldState, w: Walker, who: Mover, goals: GridPos[], allow: GridPos[] = []): boolean {
+export function routeTo(s: WorldState, w: Walker, who: Mover, goals: GridPos[], allow: GridPos[] = []): boolean {
   const p = findPath(s.floor, env(s, allow), who, cellOf(w), goals);
   if (!p) return false;
   w.path = p;
@@ -59,7 +59,7 @@ function routeTo(s: WorldState, w: Walker, who: Mover, goals: GridPos[], allow: 
 }
 
 /** Move along the path. Returns true when the path is finished. */
-function step(w: Walker, speedCells: number): boolean {
+export function step(w: Walker, speedCells: number): boolean {
   let budget = speedCells / TICKS_PER_SEC;
   while (budget > 0 && w.path.length) {
     const t = w.path[0]!;
@@ -205,7 +205,7 @@ function letGo(job: Job, e: Engineer): void {
   e.jobId = null;
 }
 
-function goHome(s: WorldState, e: Engineer): void {
+export function goHome(s: WorldState, e: Engineer): void {
   const desk = e.deskId ? s.devices[e.deskId] : undefined;
   if (!desk) { e.state = 'idle'; e.path = []; return; }
   if (cellOf(e).gx === desk.gridPos.gx && cellOf(e).gy === desk.gridPos.gy) { e.state = 'seated'; e.path = []; return; }

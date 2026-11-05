@@ -14,12 +14,13 @@ import type { Building, Device } from '../state/types';
 import { STRIDE } from '../state/city';
 import { CELL } from '../balance';
 
-type Tab = 'goals' | 'staff' | 'domains' | 'monitoring' | 'events';
+type Tab = 'goals' | 'deals' | 'staff' | 'domains' | 'monitoring' | 'events';
 import { fmtTime } from './inspector';
 import { baseStyle } from './styles';
 import { onThemeChange, theme, toggleTheme } from './theme';
 import { canRedo, canUndo, onUndoChange } from '../state/undo';
 import { doUndo, openBuilding, showCity } from '../input';
+import { renderDeals } from './deals';
 
 function hintText(): string {
   const u = ui.get();
@@ -526,6 +527,7 @@ const GOALS_CSS = `
   .a .t span { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-faint); white-space: nowrap; padding: 2px 8px; border-radius: 999px; background: var(--well); }
   .a.done .t span { color: var(--ok); background: var(--ok-soft); }
   .a p { margin: 0; font-size: 13px; line-height: 1.5; }
+  .a ol { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.5; color: var(--ink-dim); display: grid; gap: 3px; }
   .a .rw { color: var(--accent); font-size: 12.5px; font-weight: 600; }
   .a ol { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.55; color: var(--ink-dim); display: grid; gap: 3px; }
   .a details summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--ink-dim); }
@@ -591,7 +593,7 @@ export class NsGoals extends HTMLElement {
     st.textContent = GOALS_CSS;
     this.shadow.appendChild(st);
     const h = document.createElement('header');
-    h.innerHTML = `<div class="tabs"><button data-tab="goals">Goals</button><button data-tab="staff">Staff</button><button data-tab="domains">Internet</button><button data-tab="monitoring" data-mon>Monitor</button><button data-tab="events">Events</button></div><button class="close ghost" aria-label="Close goals">×</button>`;
+    h.innerHTML = `<div class="tabs"><button data-tab="goals">Goals</button><button data-tab="deals">Deals</button><button data-tab="staff">Staff</button><button data-tab="domains">Internet</button><button data-tab="monitoring" data-mon>Monitor</button><button data-tab="events">Events</button></div><button class="close ghost" aria-label="Close goals">×</button>`;
     this.shadow.appendChild(h);
     this.body = document.createElement('div');
     this.body.className = 'body';
@@ -721,6 +723,7 @@ export class NsGoals extends HTMLElement {
     const s = world.get();
     const scroll = this.body.scrollTop;
     this.body.innerHTML = '';
+    if (this.tab === 'deals') { renderDeals(this.body, s); this.body.scrollTop = scroll; return; }
     if (this.tab === 'staff') { this.renderStaff(); this.body.scrollTop = scroll; return; }
     if (this.tab === 'domains') { this.renderDomains(); return; }
     if (this.tab === 'monitoring') { this.renderMonitoring(); this.body.scrollTop = scroll; return; }

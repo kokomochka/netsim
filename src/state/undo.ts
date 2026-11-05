@@ -19,7 +19,7 @@ const listeners = new Set<() => void>();
 
 // things the simulation owns: they are not part of "what you configured"
 const DEVICE_LIVE = ['health', 'hw', 'temp', 'wear', 'age', 'sw', 'compromised', 'usage', 'specs', 'parts', 'macTable'] as const;
-const SERVICE_LIVE = ['demand', 'reputation', 'availability', 'downSinceTick', 'downPenalised', 'upTicks', 'live', 'usedGB', 'appVersion', 'quality', 'devProgress', 'flowIds', 'flowId'] as const;
+const SERVICE_LIVE = ['demand', 'reputation', 'availability', 'downSinceTick', 'downPenalised', 'upTicks', 'live', 'usedGB', 'appVersion', 'quality', 'devProgress', 'flowIds', 'flowId', 'contractId'] as const;
 
 function sections(s: WorldState): Sections {
   return { devices: s.devices, cables: s.cables, floor: s.floor, domains: s.domains, publicAddrs: s.publicAddrs, services: s.services };

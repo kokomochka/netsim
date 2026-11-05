@@ -467,6 +467,18 @@ export class Renderer {
       }
       label(t.id, t.spotted ? 'stranger!' : '?', x, y - 9, COLORS.strangerRim);
     }
+    for (const v of Object.values(s.deals?.visitors ?? {})) {
+      if (!this.iso.cellVisible(s, Math.floor(v.x), Math.floor(v.y))) continue;
+      const x = v.x * CELL, y = v.y * CELL;
+      if (v.state === 'waiting') {
+        // a speech bubble: they want to talk to someone
+        const pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.005);
+        g.roundRect(x - 12, y - 64, 24, 16, 6).fill({ color: 0xffffff, alpha: 0.95 }).stroke({ width: 1.5, color: COLORS.healthWarn, alpha: 0.6 + pulse * 0.4 });
+        g.poly([x - 3, y - 48, x + 3, y - 48, x, y - 43]).fill({ color: 0xffffff });
+        for (const dx of [-6, 0, 6]) g.circle(x + dx, y - 56, 1.8).fill({ color: 0x5b6168 });
+      }
+      label(v.id, v.name.split(' ')[0]!, x, y + 26, COLORS.label);
+    }
     for (const [id, t] of this.labelViews) if (!seen.has(id)) { t.destroy(); this.labelViews.delete(id); }
   }
 

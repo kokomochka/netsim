@@ -18,6 +18,7 @@ import { knownProblems, monitorFlows, noticeTick, setMonitorHooks } from './moni
 import { PLAYER_BLOCK_OCTETS } from '../balance';
 import { backendPort, flowShape, roundTrip, tripOk } from './net';
 import { refreshVpns } from './vpn';
+import { dealsTick, setDealHooks } from './deals';
 import { cancelJob, compromise, createJob, deskReaches, setStaffHooks, spawnTrespasser, staffTick } from './staff';
 import { checkAchievements } from '../progress';
 import { parseIp } from '../state/ip';
@@ -71,6 +72,7 @@ export function tick(state: WorldState, cache: RuntimeCache): void {
     hwFastTick(state, cache);
     climateTick(state, cache);
     staffTick(state, cache);
+    dealsTick(state, cache);
     noticeTick(state, cache);
     mirrorTick(state, cache);
     if (state.time.tick % TICKS_PER_SEC === 7) backupStamp(state, cache);
@@ -421,7 +423,7 @@ function economy(state: WorldState): void {
   let upkeep = 0;
   for (const d of Object.values(state.devices)) upkeep += upkeepOf(d);
   upkeep += Object.values(state.staff.engineers).reduce((a, e) => a + (e.salary ?? ENGINEER_SALARY), 0);
-  for (const d of Object.values(state.domains)) upkeep += DOMAIN_RENEWAL + (d.hosting === 'registrar' ? REGISTRAR_DNS_FEE : 0);
+  for (const d of Object.values(state.domains)) if (!d.client) upkeep += DOMAIN_RENEWAL + (d.hosting === 'registrar' ? REGISTRAR_DNS_FEE : 0);
   for (const d of Object.values(state.devices)) if (d.kind === 'tower') upkeep += towerPenalty(d);
   state.economy.balance += (rev - upkeep) / TICKS_PER_SEC;
   state.economy.totalEarned += rev / TICKS_PER_SEC;
@@ -576,6 +578,8 @@ function cloudCapacityGB(state: WorldState, cache: RuntimeCache, svc: Service): 
 
 /** $/s a service earns right now. */
 export function serviceRevenue(state: WorldState, svc: Service): number {
+  // a client's service: they pay for it under the deal, not per visitor
+  if (svc.contractId && state.deals?.contracts[svc.contractId]?.state === 'live') return 0;
   if (svc.kind === 'ai') {
     const c = runtimeRef ? chain(state, runtimeRef, svc) : null;
     let rev = 0;
@@ -1383,6 +1387,7 @@ export function initSimulation(state: WorldState, cache: RuntimeCache): void {
   seedRng(state.meta.rng ?? state.meta.seed);
   runtimeRef = cache;
   setStaffHooks({ notify, log: addLog, finishJob, fetchReady });
+  setDealHooks({ notify });
   setClimateHooks({ notify, log: addLog });
   setHwHooks({ notify, log: addLog });
   setMonitorHooks({ notify, log: addLog });

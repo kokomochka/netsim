@@ -10,6 +10,7 @@ import type { WorldState } from './state/types';
 import { initTheme, onThemeChange } from './ui/theme';
 import { installUndo } from './state/undo';
 import './ui/hud';
+import './ui/deals';
 import './ui/inspector';
 import './ui/palette';
 import type { NsTopbar } from './ui/hud';

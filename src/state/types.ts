@@ -476,6 +476,56 @@ export interface Service {
   upTicks: number;               // consecutive ticks ≥ 99 %
   live?: boolean;                // has served visitors at least once: only then it counts toward uptime
   flowId: FlowId | null;
+  contractId?: string;           // serving a client under contract: paid by them, not per visitor
+}
+
+// ─── Deals ──────────────────────────────────────────────────────────────────
+
+export type DealKind = 'web' | 'shop' | 'files' | 'gpu' | 'dns' | 'vpn' | 'shield';
+
+/** A client's job: what they want online, and how they pay for it. */
+export interface Contract {
+  id: string;
+  client: string;                // the person who came in
+  org: string;                   // who they work for
+  kind: DealKind;
+  pitch: string;
+  fqdn?: string;                 // the name their service must answer on
+  domain?: string;               // their domain, handed to you to manage
+  siteId?: string;               // vpn: their office
+  upfront: number;               // paid the moment it first works
+  rate: number;                  // $/s while it works, afterwards
+  termS: number | null;          // seconds of service; null = until they leave
+  setupBy: number;               // tick: must be working by then
+  state: 'setup' | 'live' | 'done' | 'failed' | 'ended';
+  serviceId?: string;
+  liveAt?: number;               // tick it first worked
+  servedS: number;               // seconds of service so far (only counts while it works)
+  downS: number;                 // current outage, seconds
+  paid: number;
+  status: string;                // why it does / does not work right now
+  how?: string[];                // tutorial steps
+  endedAt?: number;
+  endWhy?: string;
+}
+
+export interface Applicant { name: string; traits: Trait[]; salary: number; pitch: string }
+
+export interface Visitor extends Walker {
+  id: string;
+  name: string;
+  state: 'arriving' | 'waiting' | 'leaving';
+  offer?: Contract;
+  applicant?: Applicant;
+  leaveAt: number;               // tick they give up waiting
+}
+
+export interface Deals {
+  contracts: Record<string, Contract>;
+  visitors: Record<string, Visitor>;
+  nextVisit: number;             // tick
+  tutorial: number;              // next scripted visitor (0–2); 3 = done or skipped
+  served: number;                // visitors spoken to
 }
 
 // ─── Economy ────────────────────────────────────────────────────────────────
@@ -749,6 +799,7 @@ export interface PublicAddr {
 export interface Domain {
   id: string;
   name: string;                  // e.g. acme.net
+  client?: string;               // a client's domain you manage under contract (they pay the renewal)
   hosting: 'registrar' | 'self'; // who answers DNS for it
   nsIp: string;                  // self-hosted: public IP of your Public DNS server
   records: DnsRecord[];          // A records: name ("www", "@") → IP
@@ -795,6 +846,7 @@ export interface WorldState {
   floor: Floor;
   buildings: Record<string, Building>;
   sites?: Record<string, RemoteSite>;
+  deals?: Deals;
   staff: Staff;
   climate: Climate;
   domains: Record<string, Domain>;
