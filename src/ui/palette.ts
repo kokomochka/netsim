@@ -154,7 +154,7 @@ export class NsPalette extends HTMLElement {
 
     // Select button
     const selectBtn = this.makeToolButton(
-      selectGlyph(), 'Select', 'configure',
+      selectGlyph(), 'Select', 'inspect & set up',
       t.mode === 'select',
       'Select and configure (Esc)',
       () => setTool({ mode: 'select' }),

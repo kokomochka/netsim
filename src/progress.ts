@@ -85,7 +85,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     title: 'Patch panel',
     goal: 'Run live site traffic through a switch with at least 3 cables for 60 seconds.',
     how: [
-      'Put a switch on your inside network. Everything on one switch shares one subnet.',
+      'Put a switch on your inside network. Ports in the same VLAN share one subnet (they all start in VLAN 1).',
       'Cable the router/firewall inside port and two or more servers to it.',
       'Without MAC learning, the switch floods every frame out of every port. Watch the extra load on the cables.',
     ],
@@ -216,8 +216,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     title: 'On the map',
     goal: 'Serve a website by name: buy a domain, add a record, and give the site that name.',
     how: [
-      'Open the Domains tab and buy a domain, e.g. mysite.net.',
-      'Add a record: name "www" → the public IP your site (or your reverse proxy) is reached on. Several records with the same name share the load and fail over.',
+      'Open the Internet tab and buy a domain, e.g. mysite.net.',
+      'Add a record: "www" → the public IP your site (or your reverse proxy) sits on. Add more records with the same name and visitors are spread across them.',
       'In the server\'s Website role, pick www.mysite.net as its domain name.',
       'Named sites get about 40 % more visitors.',
       'Idle engineers at a desk keep improving your apps: each release brings more visitors (5 % of releases need a quick patch).',
@@ -230,12 +230,12 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   {
     id: 'way_out',
     title: 'Way out',
-    goal: 'Get an internal machine to the internet through a static NAT entry: a patch download, an update mirror, DNS forwarder or forward proxy.',
+    goal: 'Let a machine with a private address reach the internet through a static NAT entry. A patch download counts, as does an update mirror, DNS forwarder or forward proxy.',
     how: [
       'Give a server with a private address the Update mirror role (upstream: direct) or the Forward proxy role.',
       'The internet cannot answer 192.168.x.x. On your edge firewall add a static NAT entry: a free public IP → that server.',
       'Allow its outgoing traffic (tcp/443) on the firewall if inside → outside is not allowed by default.',
-      'Every server that needs to get out now costs one public address. The reward fixes that.',
+      'For now, each machine that needs to reach out costs you a public address. That changes once this is done.',
     ],
     reward: 'Unlocks dynamic NAT: many inside hosts share the firewall\'s outside address.',
     unlocks: ['dynamicNat'],
@@ -300,7 +300,7 @@ export function checkAchievements(s: WorldState, c: RuntimeCache): void {
       st.at = s.time.tick;
       if (a.cash) { s.economy.balance += a.cash; s.economy.totalEarned += a.cash; }
       for (const u of a.unlocks ?? []) s.unlocks[u] = true;
-      notify(`Achievement: ${a.title}. ${a.reward}`, 'good');
+      notify(`Goal reached: ${a.title}. ${a.reward}`, 'good');
       c.topologyDirty = true;
     }
   }

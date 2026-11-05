@@ -23,7 +23,7 @@ function hintText(): string {
   const u = ui.get();
   switch (u.tool.mode) {
     case 'select':
-      return 'Tap a device or cable to configure it. Drag a device to move it, drag empty space to pan.';
+      return 'Click a device or cable to set it up. Drag a device to move it; drag empty floor to look around.';
     case 'place':
       return `Tap an empty floor cell to place ${u.tool.kind === 'tower' ? (u.tool.access === 'home' ? 'home networks' : 'a cell site') : `a ${DEVICE_DEFS[u.tool.kind].label.toLowerCase()}`}. Press Select or Esc when done.`;
     case 'cable':
@@ -608,7 +608,7 @@ export class NsGoals extends HTMLElement {
     const sum = mk('div', 'mon-sum');
     sum.innerHTML = `<span><b>${rows.length}</b> watched</span><span class="${nAlert ? 'bad' : ''}"><b>${nAlert}</b> down or failing</span><span class="${nWarn ? 'warn' : ''}"><b>${nWarn}</b> warnings</span><span class="${nBusy ? 'warn' : ''}"><b>${nBusy}</b> running hot</span>`;
     this.body.appendChild(sum);
-    this.body.appendChild(mk('p', 'intro', `Open on ${desks.join(', ')}. Only what ${m.name} polls shows up here; add addresses to its target list to see more.`));
+    this.body.appendChild(mk('p', 'intro', `Open on ${desks.join(', ')}. You see what ${m.name} sees: add more addresses to its poll list to watch more.`));
     for (const r of rows) this.body.appendChild(r.card);
     if (!rows.length) this.body.appendChild(mk('div', 'mon-empty', `${m.name} isn't hearing from anything yet. Add addresses to its poll targets.`));
   }
@@ -640,7 +640,7 @@ export class NsGoals extends HTMLElement {
       intro.className = 'intro';
       intro.textContent = s.meta.sandbox
         ? 'This is the example network: a sandbox that does not award goals. Start a new game from the Game menu to play the career.'
-        : 'Everything starts manual: you type every address (like 192.168.10.10/24), gateway, route, NAT entry and rule yourself. Each goal proves a skill and unlocks the automation that replaces it.';
+        : 'Everything starts manual: every address, route, NAT entry and firewall rule is yours to type. Each goal proves a skill and unlocks the automation that replaces it.';
       this.body.appendChild(intro);
       const unl = document.createElement('div');
       unl.className = 'unl';

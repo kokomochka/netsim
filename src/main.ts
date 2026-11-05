@@ -45,7 +45,7 @@ async function boot(): Promise<void> {
     install(newWorld(), false);
     renderer.centerOnUplink();
     document.querySelector('ns-goals')?.setAttribute('open', '');
-    toast('New career. Open Goals for your first task, or Game → Open example network to see a finished build.');
+    toast('Welcome. Your first task is under Goals; Game → Open example network shows a finished setup.');
   }
 
   attachInput(renderer, isUiBusy);
@@ -54,8 +54,8 @@ async function boot(): Promise<void> {
   bar.actions = {
     fit: () => fitView(renderer),
     newGame: () => { install(newWorld(), false); renderer.centerOnUplink(); toast('New game started.'); },
-    showcase: () => { install(showcaseWorld(), true); toast('Showcase campus loaded (sandbox, no goals): 12 servers with RAID and a monitoring master, AI cluster, cloud, cell site, office.'); },
-    example: () => { install(sampleWorld(), true); toast('Example network loaded (sandbox, no goals). Tap devices to see how it is configured.'); },
+    showcase: () => { install(showcaseWorld(), true); toast('Showcase campus loaded: a dozen servers, an AI cluster, cloud storage, a cell site and an office. Sandbox, so goals don\'t count here.'); },
+    example: () => { install(sampleWorld(), true); toast('Example network loaded. It\'s a sandbox, so goals don\'t count here. Click around to see how it\'s set up.'); },
     save: async () => { toast((await saveSlot()) ? 'Saved to slot.' : 'Could not save: browser storage is blocked.', 'info'); },
     load: async () => {
       const s = await loadSlot();

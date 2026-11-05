@@ -444,7 +444,7 @@ export class NsInspector extends HTMLElement {
   private healthSection(d: Device): HTMLElement {
     const s = world.get();
     if (d.kind === 'server') {
-      const sec = section('Monitoring');
+      const sec = section('Condition');
       sec.appendChild(this.monitorStatus(d.id));
       const box = el('div', 'repairs');
       const price = priceOf(d);
@@ -650,7 +650,7 @@ export class NsInspector extends HTMLElement {
     const edit = (fn: (x: RouterDevice | FirewallDevice) => void) => editL3(d.id, fn);
     const s = world.get();
     const sec = section(heading('Static NAT', `${d.nat.length}`));
-    sec.appendChild(el('p', 'note', 'Maps a public address to a private one. Leave the port empty to map the whole address; type a port ("tcp 443", "tcp 2222→22") to forward just that port, so one public IP can lead to several servers.'));
+    sec.appendChild(el('p', 'note', 'Pairs a public address with a private one. Leave the port blank to pass the whole address through, or forward just one port (tcp 443, tcp 2222→22) so a single public IP can serve several machines.'));
     d.nat.forEach((n, i) => {
       const c = natCheck(s, d as RouterDevice | FirewallDevice, n.publicIp, n.privateIp);
       const upd = (fn: (x: typeof n) => void) => edit((x) => { const r = x.nat[i]; if (r) fn(r); });
@@ -674,7 +674,7 @@ export class NsInspector extends HTMLElement {
       sec.appendChild(el('p', 'locked', `Many inside hosts sharing one outside address: ${lockedMsg('dynamicNat')}`));
       return sec;
     }
-    sec.appendChild(el('p', 'note', 'Outgoing traffic from an inside network takes the address of the port it leaves through. One public IP for everything that only needs to get out; nobody outside can start a connection to them. Static NAT entries win for their hosts.'));
+    sec.appendChild(el('p', 'note', 'A whole inside network goes out through one shared address: the one on the port the traffic leaves by. Replies come back, but nobody outside can open a connection in. Hosts with their own static entry keep using it.'));
     const ports = d.interfaces.map((i) => ({ value: String(i.port), label: `${'name' in i ? (i as { name: string }).name : d.ports[i.port]?.label ?? `port ${i.port}`}${i.ip ? ` (${i.ip})` : ''}` }));
     (d.pat ?? []).forEach((r, i) => {
       const upd = (fn: (x: NonNullable<typeof d.pat>[number]) => void) => edit((x) => { const y = x.pat?.[i]; if (y) fn(y); });
@@ -1093,8 +1093,8 @@ export class NsInspector extends HTMLElement {
       if (!d) return el('div');
       const m = runtime.monitored?.[id];
       if (m && runtime.monSilent?.[id]) return el('div', 'explain warn', `Not answering ${st.devices[m]?.name ?? '?'}'s polls: ${runtime.monWhy?.[id] ?? 'no reply'}. The master raises an alert; it cannot read wear until it answers again.`);
-      if (m) return el('div', 'explain ok', m === id ? 'Monitoring master: it watches itself.' : `Polled by ${st.devices[m]?.name ?? '?'} and answering: problems raise an alert right away.`);
-      return el('div', 'explain bad', `Not monitored: ${runtime.monWhy?.[id] ?? 'no Monitoring master'}. Problems are only found when an engineer walks past.`);
+      if (m) return el('div', 'explain ok', m === id ? 'Monitoring master: it watches itself.' : `Watched by ${st.devices[m]?.name ?? '?'}: if anything breaks, an alert goes out straight away.`);
+      return el('div', 'explain bad', `Not monitored (${runtime.monWhy?.[id] ?? 'no monitoring server'}). Nobody hears about a problem here until an engineer walks past.`);
     });
   }
 
@@ -1123,7 +1123,7 @@ export class NsInspector extends HTMLElement {
         const watched = Object.entries(runtime.monitored ?? {}).filter(([, m]) => m === d.id).length;
         const quiet = Object.keys(runtime.monSilent ?? {}).filter((k) => runtime.monitored?.[k] === d.id).map((k) => st.devices[k]?.name ?? '?');
         const cons = Object.entries(runtime.consoles ?? {}).filter(([, m]) => m === d.id).map(([k]) => st.devices[k]?.name ?? '?');
-        return `Watching ${watched} device${watched === 1 ? '' : 's'}${quiet.length ? ` (not answering: ${quiet.join(', ')})` : ''}. Servers: agent on tcp/${MON_AGENT_PORT} with this master's IP (${d.ip || 'set an IP'}) typed in. Routers, firewalls, desks and doors: SNMP. Firewalls between here and a target must allow the poll; the reply passes as part of the connection. ${cons.length ? `Console open on ${cons.join(', ')}: engineers seated there see every alert.` : 'No desk can open the console (tcp/80) yet: alerts reach you, but staff will not act on them.'}`;
+        return `${watched ? `Hearing from ${watched} device${watched === 1 ? '' : 's'}` : 'Not hearing from anything yet'}${quiet.length ? `; silent: ${quiet.join(', ')}` : ''}. Servers answer through their agent, which needs this server's address (${d.ip || 'set one first'}). Routers, firewalls, desks and doors answer SNMP. Any firewall in between has to let the poll through. ${cons.length ? `The console is open on ${cons.join(', ')}, so staff there react to alerts.` : 'No desk can open the console (tcp/80) yet: you still get alerts, but your staff won\'t.'}`;
       }, 'note'));
       return box;
     }
@@ -1180,7 +1180,7 @@ export class NsInspector extends HTMLElement {
         box.appendChild(card);
       });
       box.appendChild(btn('+ Add name', () => editRules((list) => { list.push({ id: genId('rule'), fqdn: '', backend: '' }); }), 'add'));
-      box.appendChild(el('p', 'note', 'Give a name two or more back ends to balance load and fail over when one dies. Back ends given by name are looked up through this server\'s DNS server; "this server" works too. For DNS failover, give a name several records pointing at different proxies.'));
+      box.appendChild(el('p', 'note', 'With more than one server behind a name, visitors are spread across them, and a server that stops answering simply stops getting any. Names like app1.lan are looked up through this server\'s DNS server. To share the work between several proxies too, give the domain one record per proxy.'));
       return box;
     }
     if (role === 'dns_local') {
@@ -1346,8 +1346,8 @@ export class NsInspector extends HTMLElement {
     }));
     sec.appendChild(f);
     sec.appendChild(el('p', 'sub', d.updateSrc?.trim()
-      ? `Patches download from the mirror at ${d.updateSrc.trim()} on tcp/8080, and take half the time.`
-      : 'Patches download from the internet on tcp/443: this needs a way out (NAT). Type an update mirror\'s IP to fetch locally instead.'));
+      ? `Updates come from the mirror at ${d.updateSrc.trim()} (port 8080), so patching takes half as long.`
+      : 'Updates come straight from the internet (port 443), so this machine needs a route out through NAT. Or enter an update mirror\'s address.'));
     sec.appendChild(this.liveBlock(() => {
       const st = world.get();
       const j = Object.values(st.staff.jobs).find((x) => x.deviceId === d.id && x.kind === 'update');
@@ -1359,7 +1359,7 @@ export class NsInspector extends HTMLElement {
       const j = Object.values(st.staff.jobs).find((x) => x.deviceId === d.id);
       if (!j) return st.staff.autoPatch ? 'Engineers patch new releases automatically (Staff tab).' : 'Auto-patching is off.';
       const e = j.engineerId ? st.staff.engineers[j.engineerId] : undefined;
-      if (!e) return j.retryAt !== undefined && st.time.tick < j.retryAt ? 'Queued: the download could not start, so the engineer moved on.' : 'Queued: waiting for a free engineer.';
+      if (!e) return j.retryAt !== undefined && st.time.tick < j.retryAt ? 'On hold: the update couldn\'t be downloaded, so the engineer is doing something else for now.' : 'Queued: waiting for a free engineer.';
       if (j.kind === 'update' && j.started && !j.waitWhy) return `${e.name} is patching it${j.remote ? ' remotely from a desk' : ' on site'}; the release is downloading.`;
       return j.remote ? `${e.name} is patching it remotely from a desk.` : j.started ? `${e.name} is working on it on site.` : `${e.name} is on the way.`;
     }, 'note'));
@@ -1526,7 +1526,7 @@ export class NsInspector extends HTMLElement {
     const subs = d.subifs ?? [];
     const fw = d.kind === 'firewall';
     const sec = section(heading('VLAN sub-interfaces', subs.length ? `${subs.length}` : 'none'));
-    sec.appendChild(el('p', 'note', `One cable, many networks: the switch port on the other end has to be a trunk that carries these VLANs. Each sub-interface is the gateway for its VLAN${fw ? ' and its own zone with a security level' : ''}.`));
+    sec.appendChild(el('p', 'note', `Router-on-a-stick: several VLANs over a single cable. The switch port at the other end must be a trunk that carries them. Each sub-interface is the gateway of its VLAN${fw ? ', and a zone with its own security level' : ''}.`));
     const edit = (fn: (x: DeviceOf<'router'> | DeviceOf<'firewall'>) => void) => editL3(d.id, fn);
     const ports = d.ports.map((p) => ({ value: String(p.index), label: p.label }));
     subs.forEach((v, i) => {
@@ -1901,7 +1901,7 @@ export function renderTrace(s: WorldState, p: ResolvedPath | undefined, oneWay =
   const box = el('div');
   box.style.display = 'grid';
   box.style.gap = '6px';
-  if (!p) { box.appendChild(el('p', 'note', 'Waiting for the next simulation tick…')); return box; }
+  if (!p) { box.appendChild(el('p', 'note', 'One moment…')); return box; }
   const okAll = !p.blocked && (oneWay || (!!p.ret && !p.ret.blocked));
   box.appendChild(el('div', `explain ${okAll ? 'ok' : 'bad'}`, okAll ? (oneWay ? 'Traffic gets out to the internet.' : 'Request and reply both get through.') : p.explain || (p.ret?.explain ?? '')));
   const list = el('ol', 'trace');
