@@ -86,7 +86,7 @@ export function refreshNames(s: WorldState, cache: RuntimeCache): void {
       const results = backends.map((be) => checkBackend(s, ctx, cache, px, v, be));
       const okOnes = results.filter((r) => r.ok);
       const seen = new Set<string>();
-      const healthy = okOnes.filter((r) => r.id && !seen.has(r.id) && seen.add(r.id)).map((r) => ({ id: r.id!, ip: r.ip! }));
+      const healthy = okOnes.filter((r) => r.id && !seen.has(`${r.id}:${r.port}`) && seen.add(`${r.id}:${r.port}`)).map((r) => ({ id: r.id!, ip: r.ip!, port: r.port ?? backendPort(v) }));
       cache.proxyChk[key] = okOnes.length
         ? { ok: true, why: backends.length > 1 ? `${px.name} balances ${v.fqdn} over ${okOnes.length}/${backends.length} healthy back ends${results.some((r) => !r.ok) ? ` (down: ${results.filter((r) => !r.ok).map((r) => r.name).join(', ')})` : ''}` : okOnes[0]!.why }
         : { ok: false, why: results.map((r) => r.why).join(' · ') || `${px.name} has no back end for ${v.fqdn}` };
@@ -96,19 +96,34 @@ export function refreshNames(s: WorldState, cache: RuntimeCache): void {
   refreshMirrors(s, ctx, cache);
 }
 
-function checkBackend(s: WorldState, ctx: NetCtx, cache: RuntimeCache, px: ServerDevice, v: Service, backend: string): { ok: boolean; why: string; name: string; id?: string; ip?: string } {
+/** "app1.lan", "192.168.10.10" or either with ":8080": the back end, and the port the proxy talks to it on. */
+export function splitBackend(backend: string): { host: string; port: number | null; bad?: string } {
+  const m = backend.trim().match(/^(.+?)(?::(\d+))?$/);
+  if (!m) return { host: backend.trim(), port: null };
+  if (m[2] === undefined) return { host: m[1]!, port: null };
+  const port = Number(m[2]);
+  if (port < 1 || port > 65535) return { host: m[1]!, port: null, bad: `${m[2]} is not a port (1–65535)` };
+  return { host: m[1]!, port };
+}
+
+function checkBackend(s: WorldState, ctx: NetCtx, cache: RuntimeCache, px: ServerDevice, v: Service, backend: string): { ok: boolean; why: string; name: string; id?: string; ip?: string; port?: number } {
   {
     {
-      const rule = { backend };
+      // the proxy still only speaks HTTP: it takes visitors on 80/443 and hands them on over HTTP,
+      // to the back end's own port unless the rule names one
+      const sp = splitBackend(backend);
+      if (sp.bad) return { ok: false, why: sp.bad, name: backend };
+      const port = sp.port ?? backendPort(v);
+      const rule = { backend: sp.host };
       const res = resolveFor(s, ctx, px, rule.backend);
       if (!res.ip) return { ok: false, why: res.why, name: backend };
-      const p = roundTrip(ctx, px, parseIp(res.ip)!, 'tcp', backendPort(v));
+      const p = roundTrip(ctx, px, parseIp(res.ip)!, 'tcp', port);
       const hit = p.reachedServer ? s.devices[p.reachedServer] : undefined;
       // any server running the same kind of role can take the request (load balancing)
       const role = s.devices[v.serverId]?.kind === 'server' ? (s.devices[v.serverId] as ServerDevice).roles.find((r) => r.serviceId === v.id)?.role : undefined;
       const capable = hit?.kind === 'server' && up(hit) && (hit.id === v.serverId || cache.takeover[v.serverId] === hit.id || (role && hit.roles.some((r) => r.role === role)));
-      if (tripOk(p) && capable) return { ok: true, why: `${px.name} passes ${v.fqdn} to ${backend}${res.ip !== backend ? ` (${res.ip})` : ''}`, name: backend, id: hit!.id, ip: res.ip };
-      return { ok: false, why: !tripOk(p) ? `${px.name} cannot reach ${backend} on tcp/${backendPort(v)}: ${p.explain}` : `${backend} does not run this kind of service`, name: backend };
+      if (tripOk(p) && capable) return { ok: true, why: `${px.name} passes ${v.fqdn} to ${sp.host}${res.ip !== sp.host ? ` (${res.ip})` : ''} on tcp/${port}`, name: backend, id: hit!.id, ip: res.ip, port };
+      return { ok: false, why: !tripOk(p) ? `${px.name} cannot reach ${sp.host} on tcp/${port}: ${p.explain}` : `${backend} does not run this kind of service`, name: backend };
     }
   }
 }

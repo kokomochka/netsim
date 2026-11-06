@@ -1161,7 +1161,7 @@ export class NsInspector extends HTMLElement {
           const row = el('div', 'row px-be');
           row.appendChild(el('span', 'px-n', bi === 0 ? '→' : String(bi + 1)));
           row.appendChild(makeInput(`px-${id}-b`, rule.backend, {
-            placeholder: bi === 0 ? 'app1.lan or 192.168.10.10' : 'another back end', ariaLabel: `Back end ${bi + 1}`,
+            placeholder: bi === 0 ? '192.168.10.10 or app1.lan:8080' : 'another back end', ariaLabel: `Back end ${bi + 1}`,
             onCommit: (v) => editRules((list) => {
               const i = list.findIndex((y) => y.id === id);
               if (i < 0) return;

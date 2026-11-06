@@ -681,7 +681,7 @@ export interface RuntimeCache {
   cellRoom: Record<string, string>;
   resolve: Record<ServiceId, { ip: string | null; ips: string[]; why: string }>;   // visitors' DNS lookup
   doors: Record<string, { state: 'locked' | 'open' | 'sealed'; why: string }>;    // smart door cell → state
-  proxyChk: Record<string, { ok: boolean; why: string; backends?: { id: DeviceId; ip: string }[] }>;   // "svc@proxy" → healthy back ends
+  proxyChk: Record<string, { ok: boolean; why: string; backends?: { id: DeviceId; ip: string; port: number }[] }>;   // "svc@proxy" → healthy back ends
   mirrorOk: Record<DeviceId, { ok: boolean; why: string }>;            // update mirror upstream              // "x,y" → room key
   stpBlocked: Record<CableId, DeviceId>;          // redundant link → switch port that blocks it
   storm: Record<DeviceId, true>;                 // switches caught in a loop without STP

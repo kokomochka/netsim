@@ -1097,8 +1097,8 @@ function syncInternalFlows(state: WorldState, cache: RuntimeCache): void {
       const local = (cache.proxyChk[`${svc.id}@${px.id}`]?.backends ?? []).some((b) => b.id === px.id) ? 1 : 0;
       const n = bes.length + local;
       for (const b of bes) {
-        want.set(`proxied:${svc.id}>${px.id}>${b.id}`, {
-          kind: 'proxied', origin: px.id, srcCidr: px.ip, dstIp: b.ip, protocol: 'tcp', srcPort: 50005, dstPort: backendPort(svc),
+        want.set(`proxied:${svc.id}>${px.id}>${b.id}:${b.port}`, {
+          kind: 'proxied', origin: px.id, srcCidr: px.ip, dstIp: b.ip, protocol: 'tcp', srcPort: 50005, dstPort: b.port,
           syn: false, rateMbps: (vf.rateMbps * (cache.delivery[fid] ?? 1)) / n, serviceId: svc.id, incidentId: null,
         });
       }
@@ -1507,7 +1507,7 @@ function controlFlows(state: WorldState, cache: RuntimeCache, want: Map<string, 
   for (const d of Object.values(state.devices)) {
     if (d.kind === 'badge' && d.authIp) add(`ldap:${d.id}`, d.id, d.authIp, 'tcp', ROLES.auth.port, 0.2);
     if (d.kind !== 'server') continue;
-    const needsNames = d.roles.some((r) => r.role === 'proxy' && (r.rules ?? []).some((x) => x.backend.split(/[\s,]+/).some((b) => b && parseIpLocal(b) === null)));
+    const needsNames = d.roles.some((r) => r.role === 'proxy' && (r.rules ?? []).some((x) => x.backend.split(/[\s,]+/).some((b) => b && parseIpLocal(b.replace(/:\d+$/, '')) === null)));
     if (d.dns && needsNames) add(`dns:${d.id}`, d.id, d.dns, 'udp', 53, 0.2);
     if (d.roles.some((r) => r.role === 'dns_local')) add(`dnsfwd:${d.id}`, d.id, INTERNET_IP, 'udp', 53, 0.3);
     const m = d.roles.find((r) => r.role === 'mirror');
