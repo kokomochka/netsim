@@ -123,15 +123,16 @@ function resolveAll(state: WorldState, cache: RuntimeCache): void {
  *  reachability, so a blocked 443 shows as blocked instead of flapping. */
 export function visitorPort(state: WorldState, svc: Service): number {
   if (svc.kind === 'dns') return svc.port;
-  // a site on its own port (8080…) is reached there, with or without a certificate
-  if (svc.port !== 80) return svc.port;
-  const host = state.devices[svc.serverId];
-  if (host?.kind === 'server' && host.cert) return 443;
+  // a name a certified reverse proxy answers for: visitors use HTTPS on 443, whatever port the back end is on
   if (svc.fqdn) {
     for (const d of Object.values(state.devices)) {
       if (d.kind === 'server' && d.cert && d.roles.some((r) => r.role === 'proxy' && (r.rules ?? []).some((x) => x.fqdn === svc.fqdn))) return 443;
     }
   }
+  // a site on its own port (8080…) is reached there; with a certificate it speaks HTTPS on it
+  if (svc.port !== 80) return svc.port;
+  const host = state.devices[svc.serverId];
+  if (host?.kind === 'server' && host.cert) return 443;
   return 80;
 }
 
@@ -1015,8 +1016,10 @@ function eavesdrop(state: WorldState, cache: RuntimeCache): void {
     if (!p || p.blocked || p.viaTunnel || f.kind === 'attack' || f.kind === 'probe') return false;
     const svc = f.serviceId ? state.services[f.serviceId] : undefined;
     const host = svc ? state.devices[svc.serverId] : undefined;
-    const plainHttp = !!svc && svc.kind !== 'dns' && f.dstPort !== 443 && !(host?.kind === 'server' && host.cert);
-    if (!PLAINTEXT_PORTS.has(f.dstPort) && !plainHttp) return false;
+    // a website or API whose server holds a certificate speaks HTTPS on whatever port it uses
+    const encrypted = !!svc && svc.kind !== 'dns' && (f.dstPort === 443 || (host?.kind === 'server' && !!host.cert));
+    const plainHttp = !!svc && svc.kind !== 'dns' && !encrypted;
+    if (encrypted || (!PLAINTEXT_PORTS.has(f.dstPort) && !plainHttp)) return false;
     return crosses(p) || crosses(p.ret);
   });
   if (!exposed.length) return;
