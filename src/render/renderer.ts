@@ -302,16 +302,24 @@ export class Renderer {
       const b = buildingAt(s.buildings, x, gy);
       if (!b || !b.owned || b.id !== this.iso.focus || levelOf(gy) >= b.floors) return;
       const t = tileAt(f, x, gy);
-      const c = floorTileColor(t);
-      if (!c) return;
       const px = x * CELL, py = gy * CELL;
-      // a doorway or vent in the outer wall: only the inside half is floor, the wall line is the building's edge
       const ly = gy - levelOf(gy) * STRIDE;
       const out = (dx: number, dy: number) => !inRects(b.rects, x + dx, ly + dy);
-      if (t !== 'xwall' && (out(0, 1) || out(0, -1) || out(1, 0) || out(-1, 0))) {
+      // under a wall, door or vent: the floor of the room beside it, so no grass shows inside
+      const under = t === 'wall' || t === 'xwall' || t === 'vent' || t === 'door' || t === 'smartdoor';
+      let c = floorTileColor(t);
+      if (under) {
+        const room = [[0, 1], [0, -1], [1, 0], [-1, 0]].map(([dx, dy]) => tileAt(f, x + dx!, gy + dy!)).find((n) => n === 'floor' || n === 'raised');
+        c = floorTileColor(room ?? 'floor');
+      }
+      if (!c) return;
+      // on the building's edge only the inside part is floor: the wall line is where the building ends
+      const edge = out(0, 1) || out(0, -1) || out(1, 0) || out(-1, 0);
+      if (under && edge) {
         const h = CELL / 2;
-        const r = out(0, 1) ? [px, py, CELL, h] : out(0, -1) ? [px, py + h, CELL, h] : out(1, 0) ? [px, py, h, CELL] : [px + h, py, h, CELL];
-        g.rect(r[0]!, r[1]!, r[2]!, r[3]!).fill({ color: c.fill });
+        const x0 = out(-1, 0) ? px + h : px, x1 = out(1, 0) ? px + h : px + CELL;
+        const y0 = out(0, -1) ? py + h : py, y1 = out(0, 1) ? py + h : py + CELL;
+        g.rect(x0, y0, x1 - x0, y1 - y0).fill({ color: c.fill });
         return;
       }
       g.rect(px, py, CELL, CELL).fill({ color: c.fill });
