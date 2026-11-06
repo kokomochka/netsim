@@ -5,7 +5,7 @@ import { initSimulation, notices, tick } from './sim/engine';
 import { exportJson, importJson, loadAutosave, loadSlot, saveNow, saveSlot, slotInfo, startAutosave } from './state/persist';
 import { sampleWorld } from './state/sample';
 import { showcaseWorld } from './state/showcase';
-import { newWorld, resetRuntime, runtime, toast, ui, world } from './state/world';
+import { connect, newWorld, placeDevice, resetRuntime, runtime, toast, ui, world } from './state/world';
 import type { WorldState } from './state/types';
 import { initTheme, onThemeChange } from './ui/theme';
 import { installUndo } from './state/undo';
@@ -116,7 +116,7 @@ async function boot(): Promise<void> {
   requestAnimationFrame(loop);
   setInterval(() => { if (world.get().speed > 0) void saveNow(); }, 30_000);
 
-  (window as unknown as { netsim: unknown }).netsim = { world, ui, renderer, runtime };
+  (window as unknown as { netsim: unknown }).netsim = { world, ui, renderer, runtime, placeDevice, connect };
 }
 
 boot().catch((err) => {

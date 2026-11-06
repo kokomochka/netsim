@@ -2,14 +2,14 @@
 // world container holding cables, devices, ports, overlay and placement ghost.
 import { Application, Container, Graphics, Text } from 'pixi.js';
 import { BODY, CELL, HP_CRITICAL, HP_WARNING } from '../balance';
-import { portPos, portUsage } from '../state/geometry';
+import { portDir, portPos, portUsage } from '../state/geometry';
 import { assertNever, type Building, type Cable, type Device, type Flow, type FlowKind, type ResolvedPath, type Vec2 } from '../state/types';
 import { focusOf, pointer, runtime, ui, world, deviceAtCell } from '../state/world';
 import { doorStates, smartDoorsLocked } from '../sim/staff';
 import { inParking, isIndoor, isPath, placementError, tileAt } from '../state/floor';
 import { flowShape } from '../sim/net';
 import { layoutCables } from './cablelayout';
-import { VolumeScene, drawGround, floorTileColor } from './volume';
+import { VolumeScene, drawGround, floorTileColor, extentOf } from './volume';
 import { STRIDE, buildingAt, inRects, levelOf } from '../state/city';
 import { clearIconCache, deviceContext } from './icons';
 import { CABLE_COLOR, COLORS, KIND_COLOR } from './palette';
@@ -95,6 +95,7 @@ export class Renderer {
   private cables = new Graphics();
   private devices = new Container();
   private ports = new Graphics();
+  private portTip = new Text({ text: '', resolution: 3, style: { fontFamily: LABEL_FONT, fontSize: 11, fill: 0xffffff, fontWeight: '700', stroke: { color: 0x1d232b, width: 4 } } });
   private carriers = new Graphics();
   private healthBadges = new Graphics();
   private overlay = new Graphics();
@@ -115,9 +116,12 @@ export class Renderer {
     host.appendChild(this.app.canvas);
     this.app.canvas.style.touchAction = 'none';
     this.app.stage.addChild(this.grid, this.worldLayer);
-    this.worldLayer.addChild(this.plane, this.iso.stand, this.labels);
+    this.worldLayer.addChild(this.plane, this.iso.stand, this.ports, this.labels);
+    this.labels.addChild(this.portTip);
+    this.portTip.anchor.set(0.5, 1);
+    this.portTip.visible = false;
     this.plane.addChild(this.planeInner);
-    this.planeInner.addChild(this.floorG, this.roomTint, this.doorG, this.cables, this.carriers, this.devices, this.ports, this.people, this.overlay, this.ghost);
+    this.planeInner.addChild(this.floorG, this.roomTint, this.doorG, this.cables, this.carriers, this.devices, this.people, this.overlay, this.ghost);
     this.labels.addChild(this.healthBadges, this.deviceLabels, this.roomLabels, this.peopleLabels);
     this.view = 'iso';   // one view now: top-down with volume
     this.ghost.addChild(this.ghostIcon, this.ghostMark);
@@ -199,6 +203,30 @@ export class Renderer {
   pickDevice(sx: number, sy: number): string | null {
     const c = world.get().camera;
     return this.iso.pick((sx - c.x) / c.scale, (sy - c.y) / c.scale);
+  }
+
+  /** Where a port sits on the drawn model: on the top edge, or on the front face for the side facing you. */
+  portSpot(d: Device, i: number): Vec2 {
+    const dir = portDir(d, i);
+    const H = d.kind === 'tower' ? 22 : this.iso.heightOf(d.kind);
+    const e = extentOf(d.kind);
+    const cx = (d.gridPos.gx + 0.5) * CELL, cy = (d.gridPos.gy + 0.5) * CELL;
+    const t = (d.ports[i]!.offset - 0.5);          // −0.5 … 0.5 along the side
+    if (dir.y < 0) return { x: cx + t * 2 * e.hx * 0.85, y: cy - e.n - H };
+    if (dir.y > 0) return { x: cx - t * 2 * e.hx * 0.85, y: cy + e.s - H * 0.5 };
+    const y = cy + (e.s - e.n) / 2 + t * (e.n + e.s) * 0.85 * (dir.x > 0 ? 1 : -1);
+    return { x: cx + dir.x * e.hx, y: y - H };
+  }
+
+  /** The port of a device nearest a world point, on the drawn model. */
+  portAt(d: Device, pt: Vec2, radius: number): number | null {
+    let best: number | null = null, bd = radius;
+    for (const port of d.ports) {
+      const q = this.portSpot(d, port.index);
+      const dist = Math.hypot(q.x - pt.x, q.y - pt.y);
+      if (dist < bd) { bd = dist; best = port.index; }
+    }
+    return best;
   }
 
   /** A closed building under a screen point, if any. */
@@ -580,24 +608,40 @@ export class Renderer {
 
     this.drawCables();
 
-    // ports
+    // ports: sockets on the device itself, above the models, with the cable rising to them from the floor
     const pg = this.ports;
     pg.clear();
+    const hoverDev = p.hoverDevice ? s.devices[p.hoverDevice] : undefined;
+    const tipPort = cableMode && hoverDev && p.pointerWorld ? this.portAt(hoverDev, p.pointerWorld, 16) : null;
     for (const d of Object.values(s.devices)) {
-      if (!this.iso.cellVisible(s, d.gridPos.gx, d.gridPos.gy)) continue;
+      if (d.kind === 'badge' || !this.iso.cellVisible(s, d.gridPos.gx, d.gridPos.gy) || levelOf(d.gridPos.gy) !== this.iso.level) continue;
+      const focusDev = cableMode && (d.id === hoverDev?.id || d.id === u.pendingCable?.deviceId);
       for (const port of d.ports) {
-        const pos = portPos(d, port.index);
+        const floor = portPos(d, port.index);
+        const pos = this.portSpot(d, port.index);
         const cableId = used.get(`${d.id}:${port.index}`);
-        if (cableId) {
-          const c = s.cables[cableId];
-          pg.circle(pos.x, pos.y, 3.4).fill({ color: c ? CABLE_COLOR[c.type] : COLORS.portRing });
+        const c = cableId ? s.cables[cableId] : undefined;
+        if (c) {
+          const col = CABLE_COLOR[c.type];
+          pg.moveTo(floor.x, floor.y).lineTo(pos.x, pos.y).stroke({ width: 3, color: col });
+          pg.circle(pos.x, pos.y, d.ports.length > 4 ? 3.8 : 4.5).fill({ color: col }).stroke({ width: 1.5, color: 0x1d232b });
         } else {
-          pg.circle(pos.x, pos.y, cableMode ? 4.4 : 3)
-            .fill({ color: COLORS.portFree })
-            .stroke({ width: 1.3, color: cableMode ? COLORS.hover : COLORS.portRing, alpha: cableMode ? 1 : 0.7 });
+          const crowd = d.ports.length > 4;
+          const r = focusDev ? (crowd ? 4.5 : 5.5) : cableMode ? (crowd ? 3.8 : 4.5) : 3.5;
+          pg.circle(pos.x, pos.y, r).fill({ color: 0x1d232b }).stroke({ width: 1.8, color: cableMode ? 0xffffff : 0xc9d1da });
+        }
+        if (tipPort === port.index && hoverDev?.id === d.id) {
+          pg.circle(pos.x, pos.y, 9).stroke({ width: 2.5, color: c ? COLORS.healthBad : COLORS.hover });
         }
       }
     }
+    if (tipPort !== null && hoverDev) {
+      const pos = this.portSpot(hoverDev, tipPort);
+      const busy = used.has(`${hoverDev.id}:${tipPort}`);
+      this.portTip.text = `${hoverDev.ports[tipPort]!.label}${busy ? ' · in use' : ''}`;
+      this.portTip.position.set(pos.x, pos.y - 10);
+      this.portTip.visible = true;
+    } else this.portTip.visible = false;
 
     // overlay: hover, selection, pending cable
     const og = this.overlay;
@@ -623,7 +667,7 @@ export class Renderer {
         ring(d, 4);
         og.stroke({ width: 2, color: CABLE_COLOR[u.cableType] });
         const from = u.pendingCable.explicit
-          ? portPos(d, u.pendingCable.port)
+          ? this.portSpot(d, u.pendingCable.port)
           : { x: (d.gridPos.gx + 0.5) * CELL, y: (d.gridPos.gy + 0.5) * CELL };
         if (p.pointerWorld) {
           og.moveTo(from.x, from.y).lineTo(p.pointerWorld.x, p.pointerWorld.y)

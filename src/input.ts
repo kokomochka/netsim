@@ -146,7 +146,7 @@ export function attachInput(r: Renderer, isUiBusy: () => boolean): void {
         }
         // near a port dot picks that port; the middle of the device leaves the choice to auto-pick
         const radius = Math.min(BODY * 0.35, Math.max(BODY * 0.22, 12 / s.camera.scale));
-        const explicit = portAtPoint(dev, wpt, radius);
+        const explicit = r.portAt(dev, wpt, radius);
         if (explicit !== null && freePorts(s, dev).indexOf(explicit) === -1) {
           toast(`${dev.name} ${dev.ports[explicit]!.label} already has a cable.`, 'error');
           return;

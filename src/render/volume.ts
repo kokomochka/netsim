@@ -12,8 +12,8 @@ import { COLORS, KIND_COLOR } from './palette';
 const WALL_H = 12;
 const WALL_T = 10;
 const HEIGHT: Record<DeviceKind, number> = {
-  server: 16, router: 8, switch: 5, firewall: 10, ddos_scrubber: 9, uplink: 8,
-  desk: 7, tower: 30, ac: 14, badge: 0,
+  server: 30, router: 10, switch: 6, firewall: 12, ddos_scrubber: 12, uplink: 22,
+  desk: 16, tower: 46, ac: 18, badge: 0,
 };
 
 export function shade(c: number, f: number): number {
@@ -136,6 +136,149 @@ export function drawBuilding(g: Graphics, b: Building, level: number, dy: number
     g.poly([fx + 3, fy - 44, fx + 36, fy - 36, fx + 3, fy - 27]).fill({ color: 0x2f6db5 });
   }
   return maxY;
+}
+
+// ── device models ─────────────────────────────────────────────────────────
+// Simple volumes, the way they would stand on the floor: a rack, a flat switch,
+// a router with antennas, a desk with a monitor's back towards you.
+
+/** Each model's footprint around the cell centre: half width, and how far it reaches north and south. */
+const EXTENT: Partial<Record<DeviceKind, { hx: number; n: number; s: number }>> = {
+  server: { hx: 15, n: 17, s: 13 }, switch: { hx: 19, n: 9, s: 9 }, router: { hx: 15, n: 11, s: 11 },
+  firewall: { hx: 16, n: 12, s: 12 }, ddos_scrubber: { hx: 17, n: 13, s: 13 }, uplink: { hx: 14, n: 14, s: 12 },
+  desk: { hx: 21, n: 14, s: 10 }, ac: { hx: 17, n: 15, s: 13 }, tower: { hx: 10, n: 9, s: 9 },
+};
+export const extentOf = (k: DeviceKind) => EXTENT[k] ?? { hx: 15, n: 15, s: 15 };
+
+interface Model { hull: { x: number; y: number; w: number; h: number }; led: Vec2[]; fan?: Vec2 }
+
+/** A box with a lit top and a darker front, plus a thin dark outline so it reads at any zoom. */
+function box(g: Graphics, x0: number, y0: number, x1: number, y1: number, H: number, top: number, front: number): void {
+  // the shadow falls back and to the right, mostly behind the model, so it sits on the floor
+  g.rect(x0 + 5, y0 - H * 0.35, x1 - x0, y1 - y0 + H * 0.3).fill({ color: 0x000000, alpha: 0.16 });
+  g.rect(x0, y1 - H, x1 - x0, H).fill({ color: front });
+  g.rect(x0, y0 - H, x1 - x0, y1 - y0).fill({ color: top });
+  g.rect(x0, y0 - H, x1 - x0, y1 - y0 + H).stroke({ width: 1, color: shade(front, -0.35), alpha: 0.7 });
+  g.moveTo(x0, y1 - H).lineTo(x1, y1 - H).stroke({ width: 1, color: shade(top, 0.25), alpha: 0.8 });
+}
+
+export function drawModel(g: Graphics, d: Device, cx: number, cy: number, failed: boolean, t: number): Model {
+  const H = HEIGHT[d.kind];
+  const dim = (c: number) => (failed ? shade(c, -0.45) : c);
+  const hullOf = (x0: number, y0: number, x1: number, y1: number, h: number) => ({ x: x0, y: y0 - h, w: x1 - x0, h: y1 - y0 + h });
+  switch (d.kind) {
+    case 'server': {
+      // a rack cabinet: perforated front door, 1U seams, status lights
+      const x0 = cx - 15, x1 = cx + 15, y0 = cy - 17, y1 = cy + 13;
+      box(g, x0, y0, x1, y1, H, dim(0x3b424c), dim(0x262b33));
+      g.rect(x0 + 3, y0 - H + 3, x1 - x0 - 6, y1 - y0 - 6).stroke({ width: 1, color: 0x535b66 });
+      for (let k = 1; k < 5; k++) g.rect(x0 + 2, y1 - H + k * (H / 5), x1 - x0 - 4, 1).fill({ color: 0x191d23 });
+      for (let yy = y1 - H + 3; yy < y1 - 3; yy += 4) for (let xx = x0 + 5; xx < x1 - 9; xx += 4) g.rect(xx, yy, 1.4, 1.4).fill({ color: 0x4a525d });
+      g.rect(x1 - 6, y1 - H + 4, 2, H - 8).fill({ color: 0x8a939e });            // door handle
+      return { hull: hullOf(x0, y0, x1, y1, H), led: [0, 1, 2].map((i) => ({ x: x1 - 11, y: y1 - H + 5 + i * 4 })) };
+    }
+    case 'switch': {
+      // a flat 1U box with a row of ports on its face
+      const x0 = cx - 19, x1 = cx + 19, y0 = cy - 9, y1 = cy + 9;
+      box(g, x0, y0, x1, y1, H, dim(0xd5dae0), dim(0x8e98a4));
+      for (let k = 0; k < 8; k++) g.rect(x0 + 4 + k * 4, y1 - H + 2, 3, H - 3).fill({ color: 0x2c333c });
+      return { hull: hullOf(x0, y0, x1, y1, H), led: [0, 1, 2, 3].map((i) => ({ x: x1 - 4 - i * 4, y: y0 - H + 4 })) };
+    }
+    case 'router': {
+      // a squat box with two antennas
+      const x0 = cx - 15, x1 = cx + 15, y0 = cy - 11, y1 = cy + 11;
+      box(g, x0, y0, x1, y1, H, dim(0x2f6f9e), dim(0x1f4d70));
+      for (const ax of [x0 + 5, x1 - 5]) { g.rect(ax - 1.2, y0 - H - 18, 2.4, 18).fill({ color: 0x1b1f24 }); g.circle(ax, y0 - H - 18, 2).fill({ color: 0x1b1f24 }); }
+      return { hull: hullOf(x0, y0 - 18, x1, y1, H), led: [0, 1, 2].map((i) => ({ x: x0 + 6 + i * 5, y: y1 - H / 2 })) };
+    }
+    case 'firewall': {
+      // a red appliance with a brick face
+      const x0 = cx - 16, x1 = cx + 16, y0 = cy - 12, y1 = cy + 12;
+      box(g, x0, y0, x1, y1, H, dim(0xb2473d), dim(0x7e2f28));
+      for (let r = 0; r < 3; r++) {
+        const yy = y1 - H + 1 + r * (H / 3);
+        g.rect(x0 + 1, yy, x1 - x0 - 2, 1).fill({ color: 0x5c201b });
+        for (let xx = x0 + (r % 2 ? 4 : 8); xx < x1 - 2; xx += 8) g.rect(xx, yy, 1, H / 3).fill({ color: 0x5c201b });
+      }
+      return { hull: hullOf(x0, y0, x1, y1, H), led: [0, 1].map((i) => ({ x: x1 - 6 - i * 5, y: y0 - H + 4 })) };
+    }
+    case 'ddos_scrubber': {
+      // a purple appliance with filter grilles
+      const x0 = cx - 17, x1 = cx + 17, y0 = cy - 13, y1 = cy + 13;
+      box(g, x0, y0, x1, y1, H, dim(0x7b5cc4), dim(0x553d92));
+      for (let xx = x0 + 4; xx < x1 - 4; xx += 3) g.rect(xx, y1 - H + 3, 1.5, H - 6).fill({ color: 0x3c2a6b });
+      g.rect(x0 + 5, y0 - H + 5, x1 - x0 - 10, y1 - y0 - 10).stroke({ width: 1.5, color: 0x9c84dc });
+      return { hull: hullOf(x0, y0, x1, y1, H), led: [0, 1].map((i) => ({ x: x0 + 6 + i * 5, y: y0 - H + 4 })) };
+    }
+    case 'uplink': {
+      // the ISP's grey cabinet, with their label and a fibre lamp
+      const x0 = cx - 14, x1 = cx + 14, y0 = cy - 14, y1 = cy + 12;
+      box(g, x0, y0, x1, y1, H, dim(0x8b96a3), dim(0x5d6773));
+      g.rect(x0 + 6, y1 - H + 4, x1 - x0 - 12, 6).fill({ color: 0xf2f4f6 });
+      g.rect(x0 + 8, y1 - H + 6, 8, 2).fill({ color: 0x7460ee });
+      g.rect(x0 + 4, y0 - H + 4, x1 - x0 - 8, 3).fill({ color: 0x6d7884 });
+      return { hull: hullOf(x0, y0, x1, y1, H), led: [{ x: x1 - 7, y: y1 - 6 }, { x: x1 - 12, y: y1 - 6 }] };
+    }
+    case 'desk': {
+      // a П: desktop on two side panels, the back of a monitor on it, a chair behind
+      const wood = d.reception ? 0xc9a77c : 0xb88a5a;
+      const x0 = cx - 21, x1 = cx + 21, y0 = cy - 14, y1 = cy + 10;
+      g.rect(x0 + 5, y0 - H * 0.35, x1 - x0, y1 - y0 + H * 0.3).fill({ color: 0x000000, alpha: 0.14 });
+      // side panels (the legs of the П), then the modesty panel between them
+      g.rect(x0, y1 - H, 4, H).fill({ color: shade(wood, -0.35) });
+      g.rect(x1 - 4, y1 - H, 4, H).fill({ color: shade(wood, -0.35) });
+      g.rect(x0 + 4, y1 - H, x1 - x0 - 8, H * 0.55).fill({ color: shade(wood, -0.2) });
+      // the desktop slab
+      g.rect(x0 - 1, y0 - H, x1 - x0 + 2, y1 - y0).fill({ color: wood });
+      g.rect(x0 - 1, y1 - H - 2, x1 - x0 + 2, 3).fill({ color: shade(wood, -0.25) });
+      g.rect(x0 - 1, y0 - H, x1 - x0 + 2, y1 - y0 + 1).stroke({ width: 1, color: shade(wood, -0.45), alpha: 0.6 });
+      // keyboard on the far side (where the person sits), then the monitor's back
+      g.rect(cx - 9, y0 - H + 2, 18, 4).fill({ color: 0x3a3f46 });
+      const mx = cx - 11, my = y0 - H + 10;
+      g.rect(cx - 2, my, 4, 6).fill({ color: 0x2b2f35 });                         // stand
+      g.rect(mx, my - 15, 22, 15).fill({ color: dim(0x2f343b) });                // back of the screen
+      g.rect(mx + 2, my - 13, 18, 11).fill({ color: dim(0x3a4048) });
+      g.rect(mx, my - 15, 22, 15).stroke({ width: 1, color: 0x15181c });
+      if (d.reception) g.rect(x0 + 3, y1 - H + 2, 12, 4).fill({ color: 0xf2f4f6 });   // a name plate on the front
+      return { hull: hullOf(x0, y0 - 8, x1, y1, H), led: [{ x: mx + 19, y: my - 3 }] };
+    }
+    case 'ac': {
+      // a white unit with a fan grille on top
+      const x0 = cx - 17, x1 = cx + 17, y0 = cy - 15, y1 = cy + 13;
+      box(g, x0, y0, x1, y1, H, dim(0xeef1f3), dim(0xb9c2ca));
+      const fx = cx + 2, fy = (y0 + y1) / 2 - H;
+      g.circle(fx, fy, 10).fill({ color: 0x2c3540 });
+      g.circle(fx, fy, 10).stroke({ width: 1.5, color: 0x9aa5b1 });
+      for (let xx = x0 + 3; xx < x1 - 3; xx += 4) g.rect(xx, y1 - H + 4, 2, H - 8).fill({ color: 0x9ea8b2 });
+      return { hull: hullOf(x0, y0, x1, y1, H), led: [{ x: x0 + 5, y: y0 - H + 4 }], fan: d.kind === 'ac' && d.on ? { x: fx, y: fy } : undefined };
+    }
+    case 'tower': {
+      if (d.access === 'home') {
+        // a green street cabinet
+        const x0 = cx - 12, x1 = cx + 12, y0 = cy - 9, y1 = cy + 9;
+        box(g, x0, y0, x1, y1, 22, dim(0x4f7d5a), dim(0x37583f));
+        g.rect(x0 + 4, y1 - 18, x1 - x0 - 8, 12).stroke({ width: 1, color: 0x2a4330 });
+        return { hull: hullOf(x0, y0, x1, y1, 22), led: [{ x: x1 - 5, y: y1 - 20 }] };
+      }
+      // a lattice mast with three antenna panels
+      g.ellipse(cx + 12, cy - 4, 16, 6).fill({ color: 0x000000, alpha: 0.18 });
+      g.rect(cx - 10, cy - 2, 20, 8).fill({ color: 0x9aa1a8 });
+      const top = cy - H;
+      g.moveTo(cx - 8, cy + 2).lineTo(cx - 2, top).moveTo(cx + 8, cy + 2).lineTo(cx + 2, top).stroke({ width: 2.2, color: 0x6b727a });
+      for (let k = 1; k < 6; k++) {
+        const yy = cy + 2 - ((cy + 2 - top) * k) / 6, w = 8 - 6 * (k / 6);
+        g.moveTo(cx - w, yy).lineTo(cx + w, yy - (cy + 2 - top) / 6).stroke({ width: 1, color: 0x6b727a });
+      }
+      for (const dx of [-7, 0, 7]) g.rect(cx + dx - 2, top - 2, 4, 10).fill({ color: dim(0xe9ecef) }).stroke({ width: 1, color: 0x7d858d });
+      return { hull: { x: cx - 14, y: top - 6, w: 28, h: cy + 6 - top + 6 }, led: [{ x: cx, y: top - 5 }] };
+    }
+    default: {
+      const x0 = cx - 15, x1 = cx + 15, y0 = cy - 15, y1 = cy + 15;
+      box(g, x0, y0, x1, y1, H, dim(0xcfd5db), dim(0x8f99a4));
+      return { hull: hullOf(x0, y0, x1, y1, H), led: [] };
+    }
+  }
+  void t;
 }
 
 // ── people ────────────────────────────────────────────────────────────────
@@ -335,34 +478,23 @@ export class VolumeScene {
 
   private drawBox(d: Device, v: BoxView, selected: boolean, hovered: boolean): void {
     const cx = (d.gridPos.gx + 0.5) * CELL, cy = (d.gridPos.gy + 0.5) * CELL;
-    const hs = BODY / 2;
     const H = HEIGHT[d.kind];
-    const kc = KIND_COLOR[d.kind];
     const failed = d.health.state === 'failed' || (d.kind === 'server' && d.hw.off !== null);
     const g = v.g;
     g.clear();
-    if (d.kind === 'tower') {
-      g.ellipse(cx + 8, cy + 4, 14, 6).fill({ color: 0x000000, alpha: 0.18 });
-      g.moveTo(cx - 8, cy + 4).lineTo(cx, cy - H).lineTo(cx + 8, cy + 4).stroke({ width: 2.5, color: 0x5d636b });
-      g.moveTo(cx - 5, cy - H * 0.3).lineTo(cx + 5, cy - H * 0.3).moveTo(cx - 3, cy - H * 0.65).lineTo(cx + 3, cy - H * 0.65).stroke({ width: 1.6, color: 0x5d636b });
-      g.circle(cx, cy - H, 4).fill({ color: kc });
-      v.hull = { x: cx - 14, y: cy - H - 6, w: 28, h: H + 12 };
-      v.led = [{ x: cx, y: cy - H - 6 }];
-      v.icon.visible = false;
-    } else {
-      const front = failed ? shade(kc, -0.55) : shade(kc, -0.25);
-      v.hull = block(g, cx - hs, cy - hs, cx + hs, cy + hs, H, COLORS.card, front);
-      const n = d.kind === 'switch' ? 6 : d.kind === 'server' ? 3 : 2;
-      v.led = Array.from({ length: n }, (_, i) => ({ x: cx - hs + 8 + i * ((BODY - 16) / Math.max(1, n - 1)), y: cy + hs - H / 2 }));
-      v.icon.visible = true;
-      if (selected || hovered) g.roundRect(cx - hs - 2, cy - hs - H - 2, BODY + 4, BODY + 4, 8).stroke({ width: selected ? 2.5 : 1.5, color: selected ? COLORS.selection : COLORS.hover, alpha: selected ? 1 : 0.7 });
+    v.icon.visible = false;
+    v.fan = undefined;
+    const m = drawModel(g, d, cx, cy, failed, this.clock);
+    v.hull = m.hull;
+    v.led = m.led;
+    v.fan = m.fan;
+    if (selected || hovered) {
+      const h = m.hull;
+      g.roundRect(h.x - 3, h.y - 3, h.w + 6, h.h + 6, 7).stroke({ width: selected ? 2.5 : 1.5, color: selected ? COLORS.selection : COLORS.hover, alpha: selected ? 1 : 0.7 });
     }
     v.iconY = cy - H;
-    v.icon.position.set(cx, v.iconY);
-    v.icon.alpha = failed ? 0.5 : 1;
     v.lift = hovered && !selected ? 2 : 0;
-    v.fan = d.kind === 'ac' && d.on ? { x: cx + hs - 9, y: cy - H - hs + 9 } : undefined;
-    v.z = cy + hs;
+    v.z = cy + BODY / 2;
     g.zIndex = v.z; v.icon.zIndex = v.z + 0.1; v.leds.zIndex = v.z + 0.2;
   }
 

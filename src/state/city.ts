@@ -168,6 +168,19 @@ export function generateCity(seed: number): CityPlan {
       b.floors += extra;
     }
   }
+  // a paved path from each front door out to the pavement, where nothing stands in the way
+  for (const b of Object.values(buildings)) {
+    const step = b.front === 's' ? 1 : -1;
+    const cells: GridPos[] = [];
+    let y = b.door.gy + step;
+    for (; y > 0 && y < CITY_H - 1; y += step) {
+      const t = f.tiles[cellKey(b.door.gx, y)];
+      if (t === 'sidewalk' || t === 'street') break;
+      if (t) { cells.length = 0; break; }
+      cells.push({ gx: b.door.gx, gy: y });
+    }
+    for (const c of cells) put(c.gx, c.gy, 'sidewalk');
+  }
   starterInterior(f, s0);
   return { floor: f, buildings, starter };
 }
