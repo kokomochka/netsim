@@ -198,7 +198,7 @@ function car(g: Graphics, x: number, y: number, dir: 1 | -1, color: number): voi
 }
 
 interface BoxView { g: Graphics; icon: Graphics; leds: Graphics; hull: { x: number; y: number; w: number; h: number }; z: number; led: Vec2[]; kind: DeviceKind; born: number; iconY: number; lift: number; fan?: Vec2 }
-interface Mover { x: number; y: number; v: number; dir: 1 | -1; color: number; id: string }
+interface Mover { x: number; y: number; v: number; dir: 1 | -1; color: number; id: string; cur?: number }
 
 export class VolumeScene {
   readonly stand = new Container({ sortableChildren: true });
@@ -212,6 +212,9 @@ export class VolumeScene {
   private walkers: Mover[] = [];
   private walkerG = new Map<string, Graphics>();
   private lastT = 0;
+  private lastReal = 0;
+  /** Milliseconds of game time: stands still while paused, runs faster at 2× and 4×. */
+  private clock = 0;
   level = 0;
   /** The building opened up for you to see inside; '' shows the whole city with roofs on. */
   focus = '';
@@ -229,7 +232,7 @@ export class VolumeScene {
     // a few cars and pedestrians to begin with
     let seed = 7;
     const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
-    for (let i = 0; i < 7; i++) this.cars.push({ x: rnd() * CITY_W * CELL, y: 0, v: 70 + rnd() * 60, dir: rnd() < 0.5 ? 1 : -1, color: CAR[Math.floor(rnd() * CAR.length)]!, id: `car${i}` });
+    for (let i = 0; i < 7; i++) this.cars.push({ x: ((i + rnd() * 0.5) / 7) * CITY_W * CELL, y: 0, v: 70 + rnd() * 60, dir: rnd() < 0.5 ? 1 : -1, color: CAR[Math.floor(rnd() * CAR.length)]!, id: `car${i}` });
     for (let i = 0; i < 12; i++) this.walkers.push({ x: rnd() * CITY_W * CELL, y: 0, v: 18 + rnd() * 14, dir: rnd() < 0.5 ? 1 : -1, color: 0, id: `ped${i}` });
   }
 
@@ -263,7 +266,7 @@ export class VolumeScene {
       }
       add(g, maxY);
     }
-    // walls of your storey: inner walls light, outer walls darker
+    // walls of your storey: the building's outer walls look like the ones you build, they just can't be removed
     for (const [k, t] of Object.entries(f.tiles)) {
       if (t !== 'wall' && t !== 'xwall' && t !== 'vent') continue;
       const [x, y] = k.split(',').map(Number) as [number, number];
@@ -271,8 +274,7 @@ export class VolumeScene {
       const own = Object.values(s.buildings).find((b) => shown(b) && inRects(b.rects, x, y - dy));
       if (!own) continue;
       const wallish = (ax: number, ay: number) => { const w = tileAt(ax, ay); return w === 'wall' || w === 'xwall' || w === 'door' || w === 'smartdoor' || w === 'vent'; };
-      const outer = t === 'xwall';
-      const top = outer ? 0x8b8f96 : 0xebe7df, front = outer ? 0x60656d : 0xbab3a5;
+      const top = 0xebe7df, front = 0xbab3a5;
       const cx = x * CELL + CELL / 2, cy = y * CELL + CELL / 2, hT = WALL_T / 2;
       const g = new Graphics();
       const parts: [number, number, number, number][] = [];
@@ -366,6 +368,9 @@ export class VolumeScene {
 
   /** Blinking lights, spinning fans, drop-in animation, street life. Every frame. */
   animate(s: WorldState, now: number): void {
+    const real = this.lastReal ? Math.min(100, now - this.lastReal) : 0;
+    this.lastReal = now;
+    this.clock += real * s.speed;
     for (const [id, v] of this.boxes) {
       const d = s.devices[id];
       const g = v.leds;
@@ -377,7 +382,7 @@ export class VolumeScene {
       v.g.position.y = dy; v.leds.position.y = dy; v.icon.position.y = v.iconY + dy;
       v.g.alpha = 0.3 + 0.7 * t;
       if (v.fan) {
-        const a0 = now * 0.012;
+        const a0 = this.clock * 0.012;
         for (let k = 0; k < 3; k++) {
           const a = a0 + (k * Math.PI * 2) / 3;
           g.moveTo(v.fan.x, v.fan.y).lineTo(v.fan.x + Math.cos(a) * 6, v.fan.y + Math.sin(a) * 6).stroke({ width: 2, color: 0x2a95ad, alpha: 0.9 });
@@ -386,16 +391,16 @@ export class VolumeScene {
       const failed = d.health.state === 'failed' || (d.kind === 'server' && d.hw.off !== null);
       const busy = 'usage' in d ? Math.min(1, d.usage.bandwidth) : 0.2;
       v.led.forEach((p, i) => {
-        if (failed) { if (i === 0) g.rect(p.x - 1.5, p.y - 1.5, 3, 3).fill({ color: 0xff4b3e, alpha: 0.5 + 0.5 * Math.sin(now * 0.008) }); return; }
-        const on = Math.sin(now * (0.004 + busy * 0.03) + i * 1.7 + (h32(id) % 7)) > (busy > 0.05 ? 0.1 : 0.85);
+        if (failed) { if (i === 0) g.rect(p.x - 1.5, p.y - 1.5, 3, 3).fill({ color: 0xff4b3e, alpha: 0.5 + 0.5 * Math.sin(this.clock * 0.008) }); return; }
+        const on = Math.sin(this.clock * (0.004 + busy * 0.03) + i * 1.7 + (h32(id) % 7)) > (busy > 0.05 ? 0.1 : 0.85);
         g.rect(p.x - 1.5, p.y - 1.5, 3, 3).fill({ color: i === 0 ? 0x3ddc84 : on ? 0xffc94a : 0x2d4a36, alpha: i === 0 || on ? 1 : 0.6 });
       });
     }
-    this.animateStreet(now);
+    this.animateStreet(this.clock);
   }
 
   private animateStreet(now: number): void {
-    const dt = this.lastT ? Math.min(0.1, (now - this.lastT) / 1000) : 0;
+    const dt = this.lastT ? Math.min(0.4, Math.max(0, now - this.lastT) / 1000) : 0;
     this.lastT = now;
     const g = this.traffic;
     g.clear();
@@ -404,7 +409,17 @@ export class VolumeScene {
     const W = CITY_W * CELL;
     // cars: eastbound in the south lane, westbound in the north lane
     for (const c of this.cars) {
-      c.x += c.v * c.dir * dt;
+      // keep a gap to the car ahead in the same lane instead of driving through it
+      let gap = Infinity, ahead: Mover | undefined;
+      for (const o of this.cars) {
+        if (o === c || o.dir !== c.dir) continue;
+        let d = (o.x - c.x) * c.dir;
+        if (d <= 0) d += W + 160;          // the lane wraps around
+        if (d < gap) { gap = d; ahead = o; }
+      }
+      const want = gap < 56 ? 0 : gap < 110 && ahead ? Math.min(c.v, ahead.cur ?? ahead.v) : c.v;
+      c.cur = (c.cur ?? c.v) + (want - (c.cur ?? c.v)) * Math.min(1, dt * 4);
+      c.x += c.cur * c.dir * dt;
       if (c.x > W + 80) c.x = -80; if (c.x < -80) c.x = W + 80;
       c.y = (c.dir === 1 ? STREET_Y + 3 : STREET_Y + 1) * CELL + CELL / 2 + 4;
       if (show) car(g, c.x, c.y, c.dir, c.color);
@@ -426,7 +441,8 @@ export class VolumeScene {
   }
 
   /** Staff and strangers on the storey on show. */
-  drawPeople(s: WorldState, now: number): void {
+  drawPeople(s: WorldState, _now: number): void {
+    const now = this.clock;
     const seen = new Set<string>();
     const dy0 = this.level * STRIDE, dy1 = dy0 + STRIDE;
     const draw = (id: string, wx: number, wy: number, look: Look, walking: boolean, seated: boolean, faceX?: number) => {

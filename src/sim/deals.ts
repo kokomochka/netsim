@@ -10,8 +10,8 @@
 import { ENGINEER_SALARY, TICKS_PER_SEC, WALK_SPEED } from '../balance';
 import { ACHIEVEMENTS } from '../progress';
 import { random } from '../rng';
-import { cheb, edgeSpawns, workSpots } from '../state/floor';
-import type { Applicant, Contract, DealKind, Deals, Device, RuntimeCache, Service, Visitor, WorldState, Trait } from '../state/types';
+import { cheb, edgeSpawns, tileAt, workSpots } from '../state/floor';
+import type { Applicant, Contract, DealKind, Deals, Device, GridPos, RuntimeCache, Service, Visitor, WorldState, Trait } from '../state/types';
 import { env, goHome, routeTo, step } from './staff';
 
 let hooks: {
@@ -302,9 +302,16 @@ function hire(s: WorldState, v: Visitor): void {
 
 // ─── People ─────────────────────────────────────────────────────────────────
 
+/** The ends of the street: where people on foot come from and go to. */
+function streetEnds(s: WorldState): GridPos[] {
+  const all = edgeSpawns(s.floor);
+  const street = all.filter((p) => { const t = tileAt(s.floor, p.gx, p.gy); return t === 'sidewalk' || t === 'street'; });
+  return street.length ? street : all;
+}
+
 function leave(s: WorldState, v: Visitor): void {
   v.state = 'leaving';
-  if (!routeTo(s, v, 'trespasser', edgeSpawns(s.floor))) delete s.deals!.visitors[v.id];
+  if (!routeTo(s, v, 'trespasser', streetEnds(s))) delete s.deals!.visitors[v.id];
 }
 
 function spawnVisitor(s: WorldState): void {
@@ -325,7 +332,7 @@ function spawnVisitor(s: WorldState): void {
     else offer = generatedOffer(s) ?? undefined;
     if (!offer && !applicant) return;
   }
-  const spawns = edgeSpawns(s.floor).filter((p) => Math.abs(p.gy - desk.gridPos.gy) < 40);
+  const spawns = streetEnds(s);
   if (!spawns.length) return;
   const start = pick(spawns);
   const name = offer?.client ?? applicant!.name;

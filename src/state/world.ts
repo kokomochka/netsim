@@ -1,6 +1,6 @@
 // The two stores (saved world + transient UI) and every world mutation. Phase 2.
 import { random, seeded } from '../rng';
-import { STRIDE, buildingAt, generateCity, levelOf, localY } from './city';
+import { STRIDE, buildingAt, generateCity, inRects, levelOf, localY } from './city';
 import { CERT_PRICE, CHASSIS, ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TLDS, MAX_DISKS, MAX_SERVER_PORTS, MEDIA_SWAP_PRICE, OUTSIDE_TEMP, ENGINEER_HIRE, ROLES, START_BALANCE, TILE_PRICE, UPLINK_TIER, UPTIME_BUCKETS, PLAYER_BLOCK_OCTETS, PUBLIC_BLOCK_UPGRADES, UPLINK_START, MAP_W, MAP_H, MULTIFLOOR_SWITCH_PRICE, ENGINEER_SALARY, LEASED_LINE, FAR_PLACES } from '../balance';
 import { freshAchievements } from '../progress';
 import { DEVICE_DEFS, SERVER_PORT_LAYOUT, defOf } from './devices';
@@ -940,10 +940,27 @@ export function paintTile(x: number, y: number, tile: Tile): string | null {
   if (inParking(f, x, y)) return 'The parking lot is a no-build zone.';
   const cur = tileAt(f, x, y);
   if (cur === tile) return null;
+  let shell = false;            // the building's own outer wall or entrance
+  if (Object.keys(s.buildings ?? {}).length) {
+    const b = buildingAt(s.buildings, x, y);
+    if (!b) return 'Build inside a building you own.';
+    if (!b.owned) return `${b.name} isn't yours.`;
+    const ly = localY(y);
+    shell = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => !inRects(b.rects, x + dx!, ly + dy!));
+  } else shell = cur === 'xwall';
+  if (shell) {
+    // the outer wall can't be torn down, but vents and doors can go into it, and be walled up again
+    const isDoor = (t: string) => t === 'door' || t === 'smartdoor';
+    const main = Object.values(s.buildings ?? {}).some((b) => b.door.gx === x && b.door.gy === localY(y) && levelOf(y) === 0);
+    if (tile === 'wall') tile = 'xwall';
+    if (tile === 'xwall' && cur === 'xwall') return null;
+    if (main && !isDoor(tile)) return 'That is the building\'s entrance: it can be a door or a smart door, but it stays.';
+    if (tile !== 'xwall' && tile !== 'vent' && !isDoor(tile)) return 'Outer walls can\'t be removed. You can put a vent or a door into them.';
+  }
   const dev0 = deviceAtCell(s, x, y);
   const dev = dev0?.kind === 'badge' ? null : dev0;   // a door's own controller goes with the door
   if (dev && dev.kind !== 'tower' && !isIndoor(tile)) return `${dev.name} stands there. Move it first.`;
-  if (tile === 'vent' && cur !== 'wall') return 'Vents go into walls. Paint a wall first.';
+  if (tile === 'vent' && cur !== 'wall' && cur !== 'xwall') return 'Vents go into walls. Paint a wall first.';
   if (dev && dev.kind === 'tower' && tile !== 'ground') return `${dev.name} stands there. Move it first.`;
   const people = [...Object.values(s.staff.engineers), ...Object.values(s.staff.trespassers)];
   if (tile === 'wall' && people.some((p) => Math.floor(p.x) === x && Math.floor(p.y) === y)) return 'Someone is standing there';

@@ -10,7 +10,7 @@ import { inParking, isIndoor, isPath, placementError, tileAt } from '../state/fl
 import { flowShape } from '../sim/net';
 import { layoutCables } from './cablelayout';
 import { VolumeScene, drawGround, floorTileColor } from './volume';
-import { STRIDE, buildingAt, levelOf } from '../state/city';
+import { STRIDE, buildingAt, inRects, levelOf } from '../state/city';
 import { clearIconCache, deviceContext } from './icons';
 import { CABLE_COLOR, COLORS, KIND_COLOR } from './palette';
 
@@ -305,6 +305,15 @@ export class Renderer {
       const c = floorTileColor(t);
       if (!c) return;
       const px = x * CELL, py = gy * CELL;
+      // a doorway or vent in the outer wall: only the inside half is floor, the wall line is the building's edge
+      const ly = gy - levelOf(gy) * STRIDE;
+      const out = (dx: number, dy: number) => !inRects(b.rects, x + dx, ly + dy);
+      if (t !== 'xwall' && (out(0, 1) || out(0, -1) || out(1, 0) || out(-1, 0))) {
+        const h = CELL / 2;
+        const r = out(0, 1) ? [px, py, CELL, h] : out(0, -1) ? [px, py + h, CELL, h] : out(1, 0) ? [px, py, h, CELL] : [px + h, py, h, CELL];
+        g.rect(r[0]!, r[1]!, r[2]!, r[3]!).fill({ color: c.fill });
+        return;
+      }
       g.rect(px, py, CELL, CELL).fill({ color: c.fill });
       g.rect(px + 0.5, py + 0.5, CELL - 1, CELL - 1).stroke({ width: 1, color: c.seam });
       if (c.dots !== undefined) for (const a of [12, 24, 36]) for (const bb of [12, 24, 36]) g.circle(px + a, py + bb, 1).fill({ color: c.dots, alpha: 0.8 });
@@ -327,7 +336,7 @@ export class Renderer {
     const f = s.floor;
     const g = this.doorG;
     g.clear();
-    const isWallish = (x: number, y: number) => { const t = f.tiles[`${x},${y}`]; return t === 'wall' || t === 'door' || t === 'smartdoor' || t === 'vent'; };
+    const isWallish = (x: number, y: number) => { const t = f.tiles[`${x},${y}`]; return t === 'wall' || t === 'xwall' || t === 'door' || t === 'smartdoor' || t === 'vent'; };
     const people = [...Object.values(s.staff.engineers), ...Object.values(s.staff.trespassers)];
     for (const [k, t] of Object.entries(f.tiles)) {
       if (t !== 'door' && t !== 'smartdoor') continue;
