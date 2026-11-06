@@ -8,6 +8,7 @@ import { showcaseWorld } from './state/showcase';
 import { connect, newWorld, placeDevice, resetRuntime, runtime, toast, ui, world } from './state/world';
 import type { WorldState } from './state/types';
 import { initTheme, onThemeChange } from './ui/theme';
+import * as W from './state/world';
 import { installUndo } from './state/undo';
 import './ui/hud';
 import './ui/deals';
@@ -116,7 +117,7 @@ async function boot(): Promise<void> {
   requestAnimationFrame(loop);
   setInterval(() => { if (world.get().speed > 0) void saveNow(); }, 30_000);
 
-  (window as unknown as { netsim: unknown }).netsim = { world, ui, renderer, runtime, placeDevice, connect };
+  (window as unknown as { netsim: unknown }).netsim = { world, ui, renderer, runtime, placeDevice, connect, W, sampleWorld };
 }
 
 boot().catch((err) => {

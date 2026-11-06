@@ -162,7 +162,7 @@ function box(g: Graphics, x0: number, y0: number, x1: number, y1: number, H: num
   g.moveTo(x0, y1 - H).lineTo(x1, y1 - H).stroke({ width: 1, color: shade(top, 0.25), alpha: 0.8 });
 }
 
-export function drawModel(g: Graphics, d: Device, cx: number, cy: number, failed: boolean, t: number): Model {
+export function drawModel(g: Graphics, d: Device, cx: number, cy: number, failed: boolean, t: number, counter = false): Model {
   const H = HEIGHT[d.kind];
   const dim = (c: number) => (failed ? shade(c, -0.45) : c);
   const hullOf = (x0: number, y0: number, x1: number, y1: number, h: number) => ({ x: x0, y: y0 - h, w: x1 - x0, h: y1 - y0 + h });
@@ -222,6 +222,23 @@ export function drawModel(g: Graphics, d: Device, cx: number, cy: number, failed
     case 'desk': {
       // a П: desktop on two side panels, the back of a monitor on it, a chair behind
       const wood = d.reception ? 0xc9a77c : 0xb88a5a;
+      if (counter) {
+        // wall to wall: one solid counter, no legs, the walls hold it
+        const x0 = cx - CELL / 2, x1 = cx + CELL / 2, y0 = cy - 12, y1 = cy + 10;
+        g.rect(x0 + 5, y0 - H * 0.35, x1 - x0 - 5, y1 - y0 + H * 0.3).fill({ color: 0x000000, alpha: 0.14 });
+        g.rect(x0, y1 - H, x1 - x0, H).fill({ color: shade(wood, -0.28) });
+        for (let xx = x0 + 8; xx < x1 - 4; xx += 10) g.rect(xx, y1 - H + 3, 1, H - 5).fill({ color: shade(wood, -0.4) });
+        g.rect(x0, y0 - H, x1 - x0, y1 - y0).fill({ color: wood });
+        g.rect(x0, y1 - H - 2, x1 - x0, 3).fill({ color: shade(wood, -0.2) });
+        g.rect(cx - 9, y0 - H + 2, 18, 4).fill({ color: 0x3a3f46 });
+        const mx = cx - 11, my = y0 - H + 10;
+        g.rect(cx - 2, my, 4, 6).fill({ color: 0x2b2f35 });
+        g.rect(mx, my - 15, 22, 15).fill({ color: dim(0x2f343b) });
+        g.rect(mx + 2, my - 13, 18, 11).fill({ color: dim(0x3a4048) });
+        g.rect(mx, my - 15, 22, 15).stroke({ width: 1, color: 0x15181c });
+        g.rect(x0 + 4, y1 - H + 3, 12, 4).fill({ color: 0xf2f4f6 });
+        return { hull: hullOf(x0, y0 - 8, x1, y1, H), led: [{ x: mx + 19, y: my - 3 }] };
+      }
       const x0 = cx - 21, x1 = cx + 21, y0 = cy - 14, y1 = cy + 10;
       g.rect(x0 + 5, y0 - H * 0.35, x1 - x0, y1 - y0 + H * 0.3).fill({ color: 0x000000, alpha: 0.14 });
       // side panels (the legs of the П), then the modesty panel between them
@@ -409,6 +426,9 @@ export class VolumeScene {
       }
       add(g, maxY);
     }
+    // reception counters joined to the walls on both sides: walls reach into them
+    const isWall = (x: number, y: number) => { const t = tileAt(x, y); return t === 'wall' || t === 'xwall'; };
+    const counters = new Set(Object.values(s.devices).filter((d) => d.kind === 'desk' && d.reception && isWall(d.gridPos.gx - 1, d.gridPos.gy) && isWall(d.gridPos.gx + 1, d.gridPos.gy)).map((d) => `${d.gridPos.gx},${d.gridPos.gy}`));
     // walls of your storey: the building's outer walls look like the ones you build, they just can't be removed
     for (const [k, t] of Object.entries(f.tiles)) {
       if (t !== 'wall' && t !== 'xwall' && t !== 'vent') continue;
@@ -416,7 +436,7 @@ export class VolumeScene {
       if (y < dy || y >= dy + STRIDE) continue;
       const own = Object.values(s.buildings).find((b) => shown(b) && inRects(b.rects, x, y - dy));
       if (!own) continue;
-      const wallish = (ax: number, ay: number) => { const w = tileAt(ax, ay); return w === 'wall' || w === 'xwall' || w === 'door' || w === 'smartdoor' || w === 'vent'; };
+      const wallish = (ax: number, ay: number) => { const w = tileAt(ax, ay); return w === 'wall' || w === 'xwall' || w === 'door' || w === 'smartdoor' || w === 'vent' || counters.has(`${ax},${ay}`); };
       const top = 0xebe7df, front = 0xbab3a5;
       const cx = x * CELL + CELL / 2, cy = y * CELL + CELL / 2, hT = WALL_T / 2;
       const g = new Graphics();
@@ -449,7 +469,9 @@ export class VolumeScene {
   }
 
   /** Device boxes on the storey on show. */
+  private floorRef: Floor | null = null;
   syncDevices(s: WorldState, selected: string | null, hovered: string | null): void {
+    this.floorRef = s.floor;
     const seen = new Set<string>();
     const dy0 = this.level * STRIDE, dy1 = dy0 + STRIDE;
     for (const d of Object.values(s.devices)) {
@@ -484,7 +506,10 @@ export class VolumeScene {
     g.clear();
     v.icon.visible = false;
     v.fan = undefined;
-    const m = drawModel(g, d, cx, cy, failed, this.clock);
+    // a reception desk with a wall on each side becomes a counter from wall to wall
+    const wallAt = (x: number, y: number) => { const t = this.floorRef?.tiles[`${x},${y}`]; return t === 'wall' || t === 'xwall'; };
+    const counter = d.kind === 'desk' && !!d.reception && wallAt(d.gridPos.gx - 1, d.gridPos.gy) && wallAt(d.gridPos.gx + 1, d.gridPos.gy);
+    const m = drawModel(g, d, cx, cy, failed, this.clock, counter);
     v.hull = m.hull;
     v.led = m.led;
     v.fan = m.fan;

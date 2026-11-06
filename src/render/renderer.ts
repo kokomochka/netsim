@@ -320,7 +320,8 @@ export class Renderer {
     const f = s.floor;
     const L = this.iso.level;
     const owned = Object.values(s.buildings).filter((b) => b.owned).map((b) => `${b.id}:${b.floors}`).join(',');
-    const key = `${L}|${this.iso.focus}|${owned}|${JSON.stringify(f.tiles)}|${JSON.stringify(doorStates())}`;
+    const recep = Object.values(s.devices).filter((d) => d.kind === 'desk' && d.reception).map((d) => `${d.gridPos.gx},${d.gridPos.gy}`).join(';');
+    const key = `${L}|${this.iso.focus}|${owned}|${recep}|${JSON.stringify(f.tiles)}|${JSON.stringify(doorStates())}`;
     if (key === this.floorKey) return;
     this.floorKey = key;
     const g = this.floorG;
@@ -818,14 +819,19 @@ export class Renderer {
       const other = e.cable.a.deviceId === e.from ? e.cable.b.deviceId : e.cable.a.deviceId;
       if (agg.has(`${e.cable.id}>${other}`)) both.add(e.cable.id);
     }
+    // and each kind of traffic gets its own lane, so a reverse proxy's legs to its back ends,
+    // backups or control traffic show up next to the visitors instead of being swallowed by them
+    const ORDER: FlowKind[] = ['http', 'transit', 'proxied', 'backend', 'backup', 'control', 'probe', 'attack'];
     for (const e of agg.values()) {
-      let kind: FlowKind = 'http', best = -1;
-      if (e.byKind.has('attack')) kind = 'attack';
-      else for (const [k, v] of e.byKind) if (v > best) { kind = k; best = v; }
+      const kinds = [...e.byKind.entries()].filter(([, v]) => v > 0.05)
+        .sort((x, y) => ORDER.indexOf(x[0]) - ORDER.indexOf(y[0]));
       const shown = this.cableDisplay.get(e.cable.id) ?? e.cable.path;
-      let pts = e.cable.a.deviceId === e.from ? shown : [...shown].reverse();
-      if (both.has(e.cable.id)) pts = offsetPath(pts, 2.2);
-      this.streams.push({ pts, mbps: e.mbps, color: this.kindColor(kind), attack: kind === 'attack' });
+      const base = e.cable.a.deviceId === e.from ? shown : [...shown].reverse();
+      kinds.forEach(([kind, mbps], i) => {
+        const off = (both.has(e.cable.id) ? 2.2 : 0) + i * 3.4;
+        const pts = off ? offsetPath(base, off) : base;
+        this.streams.push({ pts, mbps, color: this.kindColor(kind), attack: kind === 'attack' });
+      });
     }
     this.blocks = blocks;
   }
