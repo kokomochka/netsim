@@ -123,6 +123,8 @@ function resolveAll(state: WorldState, cache: RuntimeCache): void {
  *  reachability, so a blocked 443 shows as blocked instead of flapping. */
 export function visitorPort(state: WorldState, svc: Service): number {
   if (svc.kind === 'dns') return svc.port;
+  // a site on its own port (8080…) is reached there, with or without a certificate
+  if (svc.port !== 80) return svc.port;
   const host = state.devices[svc.serverId];
   if (host?.kind === 'server' && host.cert) return 443;
   if (svc.fqdn) {
@@ -348,7 +350,8 @@ function serverUsage(state: WorldState, d: ServerDevice, offered: number): void 
   u.nic = Math.min(1, served / Math.max(c.nic, 1));
   u.ram = Math.min(1, (roles.ramGB + 0.5 + served * 0.02) / Math.max(1, d.specs.ramGB));
   u.storage = Math.min(1, roles.diskGB / Math.max(1, d.specs.storageGB));
-  const gpuBusy = d.roles.some((r) => r.role === 'gpu') && Object.values(state.flows).some((f) => f.kind === 'backend' && f.dstPort === ROLES.gpu.port && runtimeRef?.paths[f.id]?.reachedServer === d.id && !runtimeRef.paths[f.id]!.blocked);
+  const gpuPorts = d.roles.filter((r) => r.role === 'gpu').map((r) => r.port);
+  const gpuBusy = gpuPorts.length > 0 && Object.values(state.flows).some((f) => f.kind === 'backend' && gpuPorts.includes(f.dstPort) && runtimeRef?.paths[f.id]?.reachedServer === d.id && !runtimeRef.paths[f.id]!.blocked);
   u.gpu = d.parts.gpus ? (gpuBusy ? 0.9 : 0.03) : 0;
 }
 
@@ -536,23 +539,30 @@ function refreshRoleLinks(state: WorldState, cache: RuntimeCache): void {
         if (tripOk(p, t.id)) res.ok.push(id);
         else res.bad.push({ id, why: `cannot reach ${t.name} on tcp/${tRole.port}: ${p.explain}` });
       }
-      out[`${d.id}:${r.role}`] = res;
+      out[`${d.id}:${r.id ?? r.role}`] = res;
+      out[`${d.id}:${r.role}`] ??= res;
     }
   }
   cache.roleLinks = out;
 }
 
 /** Is the back-end chain behind a public service working? */
+/** The role-links entry of the role that runs this service. */
+function svcLinkKey(srv: ServerDevice, svc: Service): string {
+  const r = srv.roles.find((x) => x.serviceId === svc.id);
+  return `${srv.id}:${r ? r.id ?? r.role : svc.kind === 'cloud' ? 'cloud' : 'ai_frontend'}`;
+}
+
 export function chain(state: WorldState, cache: RuntimeCache, svc: Service): { ok: boolean; why: string; tflops: number; gpus: string[] } {
   const srv = state.devices[svc.serverId];
   if (srv?.kind !== 'server') return { ok: false, why: 'No server', tflops: 0, gpus: [] };
   if (svc.kind === 'web' || svc.kind === 'dns') return { ok: true, why: '', tflops: 0, gpus: [] };
   if (svc.kind === 'cloud') {
-    const l = cache.roleLinks[`${srv.id}:cloud`];
+    const l = cache.roleLinks[svcLinkKey(srv, svc)];
     if (!l?.ok.length) return { ok: false, why: l?.bad[0]?.why ?? 'Link cloud storage to a NAS or SAN server', tflops: 0, gpus: [] };
     return { ok: true, why: '', tflops: 0, gpus: [] };
   }
-  const fl = cache.roleLinks[`${srv.id}:ai_frontend`];
+  const fl = cache.roleLinks[svcLinkKey(srv, svc)];
   if (!fl?.ok.length) return { ok: false, why: fl?.bad[0]?.why ?? 'Link the AI frontend to an orchestrator', tflops: 0, gpus: [] };
   let tflops = 0;
   const gpus: string[] = [];
@@ -570,7 +580,8 @@ export function chain(state: WorldState, cache: RuntimeCache, svc: Service): { o
 }
 
 function cloudCapacityGB(state: WorldState, cache: RuntimeCache, svc: Service): number {
-  const l = cache.roleLinks[`${svc.serverId}:cloud`];
+  const srv = state.devices[svc.serverId];
+  const l = srv?.kind === 'server' ? cache.roleLinks[svcLinkKey(srv, svc)] : undefined;
   let cap = 0;
   for (const id of l?.ok ?? []) {
     const t = state.devices[id];
@@ -1002,7 +1013,10 @@ function eavesdrop(state: WorldState, cache: RuntimeCache): void {
   const exposed = Object.values(state.flows).filter((f) => {
     const p = cache.paths[f.id];
     if (!p || p.blocked || p.viaTunnel || f.kind === 'attack' || f.kind === 'probe') return false;
-    if (!PLAINTEXT_PORTS.has(f.dstPort)) return false;
+    const svc = f.serviceId ? state.services[f.serviceId] : undefined;
+    const host = svc ? state.devices[svc.serverId] : undefined;
+    const plainHttp = !!svc && svc.kind !== 'dns' && f.dstPort !== 443 && !(host?.kind === 'server' && host.cert);
+    if (!PLAINTEXT_PORTS.has(f.dstPort) && !plainHttp) return false;
     return crosses(p) || crosses(p.ret);
   });
   if (!exposed.length) return;
@@ -1054,14 +1068,14 @@ function syncInternalFlows(state: WorldState, cache: RuntimeCache): void {
     for (const r of d.roles) {
       const def = ROLES[r.role];
       if (!def.linksTo) continue;
-      for (const id of cache.roleLinks[`${d.id}:${r.role}`]?.ok ?? []) {
+      for (const id of cache.roleLinks[`${d.id}:${r.id ?? r.role}`]?.ok ?? []) {
         const t = state.devices[id];
         if (!t || t.id === d.id || t.kind !== 'server') continue;
         const tRole = t.roles.find((x) => def.linksTo!.includes(x.role));
         const svc = r.serviceId ? state.services[r.serviceId] : undefined;
         const fl = svc?.flowId ? state.flows[svc.flowId] : undefined;
         const rate = r.role === 'orchestrator' ? GPU_LINK_MBPS : r.role === 'ai_frontend' ? FRONTEND_LINK_MBPS : Math.max(2, (fl?.rateMbps ?? 10) * 0.5);
-        want.set(`backend:${d.id}>${t.id}`, {
+        want.set(`backend:${d.id}${r.id ? `:${r.id}` : ''}>${t.id}`, {
           kind: 'backend', origin: d.id, srcCidr: d.ip, dstIp: linkIp(d, t), protocol: 'tcp', srcPort: 50004, dstPort: tRole?.port ?? 0,
           syn: false, rateMbps: rate, serviceId: null, incidentId: null,
         });

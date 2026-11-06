@@ -170,6 +170,7 @@ export interface DnsRecord { id: string; name: string; ip: string }
 export interface MonTarget { id: string; ip: string; method: 'agent' | 'snmp' }
 
 export interface ServerRole {
+  id?: string;                   // tells apart several roles of one kind on a server (two websites…)
   role: RoleKind;
   serviceId: ServiceId | null;
   port: number;

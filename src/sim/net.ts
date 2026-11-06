@@ -477,12 +477,14 @@ function routeOnward(ctx: NetCtx, b: PathBuilder, start: Device, outPort: number
           return b.block('port_closed', `${d.name} does not answer SNMP. Servers are polled through the monitoring agent (tcp/${MON_AGENT_PORT}).`);
         }
         // web, cloud and AI answer HTTP on 80, and HTTPS on 443 only with a certificate
-        const webby = d.kind === 'server' && pkt.proto === 'tcp' && d.roles.some((r) => HTTP_ROLES.has(r.role));
-        if (webby && pkt.dport === 443 && !(d as ServerDevice).cert && !d.roles.some((r) => r.role === 'proxy')) {
+        const httpRoles = d.kind === 'server' && pkt.proto === 'tcp' ? d.roles.filter((r) => HTTP_ROLES.has(r.role)) : [];
+        const webby = httpRoles.length > 0;
+        const httpPorts = new Set(httpRoles.flatMap((r) => (r.port === 80 ? [80, 443] : [r.port])));
+        if (webby && pkt.dport === 443 && httpRoles.some((r) => r.port === 80) && !httpRoles.some((r) => r.port === 443) && !(d as ServerDevice).cert && !(d as ServerDevice).roles.some((r) => r.role === 'proxy')) {
           h.note = 'has no certificate, so nothing answers HTTPS';
           return b.block('port_closed', `${d.name} has no TLS certificate, so it does not answer HTTPS on tcp/443. Buy one, or let visitors use tcp/80.`);
         }
-        const https = webby && (pkt.dport === 80 || pkt.dport === 443);
+        const https = webby && httpPorts.has(pkt.dport);
         const listens = mgmt || snmp || agent || https || (d.kind === 'server' && d.roles.some((r) => ROLES[r.role].proto === pkt.proto && (ROLES[r.role].ports ?? [r.port]).includes(pkt.dport)));
         if (!listens) {
           h.note = `has nothing listening on ${pkt.proto}/${pkt.dport}`;
@@ -848,7 +850,7 @@ const HTTP_ROLES = new Set(['web', 'cloud', 'ai_frontend']);
 
 /** Port a reverse proxy uses toward the back end: TLS ends at the proxy, so plain HTTP. */
 export function backendPort(svc: Service): number {
-  return svc.kind === 'dns' ? svc.port : 80;
+  return svc.port || 80;
 }
 
 /** The answer to a monitoring poll: from the polled device back to the master.

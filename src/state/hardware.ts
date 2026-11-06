@@ -3,8 +3,7 @@
 import {
   BOARD_WATTS, CHASSIS, CPU_PARTS, DEGRADED_IO, DISK_PARTS, DISK_TYPES, FAN_WATTS, GPU_PARTS, IO_MBPS_PER_DRIVE, MBPS_PER_CORE, NIC_PARTS,
   OS_RAM_GB, PART_TRADE_IN, PORT_PRICE, PSU2_PRICE, RAID, RAM_GB_PER_MBPS, RAM_PARTS, REBUILD_IO, ROLES,
-  SERVER_BASE_PRICE, SERVER_BASE_UPKEEP, type Part, type PartGate,
-} from '../balance';
+  SERVER_BASE_PRICE, SERVER_BASE_UPKEEP, type Part, type PartGate, MULTI_ROLES } from '../balance';
 import type { Component, DiskType, PartSlot, RoleKind, ServerDevice, ServerHw, ServerParts, ServerSpecs, Unlocks } from './types';
 
 export const BASE_PARTS: ServerParts = { cpu: 0, ram: 0, disk: 0, diskType: 'hdd', disks: 1, gpu: 0, gpus: 0, nic: 0, ports: 1, chassis: 0, psu2: false, raid: 'single' };
@@ -163,7 +162,7 @@ export function roleUse(roles: RoleKind[]): Budget {
 /** Why a role cannot be added to this server, or null if it fits. */
 export function roleBlocker(d: ServerDevice, role: RoleKind, specs = d.specs): string | null {
   const def = ROLES[role];
-  if (d.roles.some((r) => r.role === role)) return 'Already installed';
+  if (!MULTI_ROLES.has(role) && d.roles.some((r) => r.role === role)) return 'Already installed';
   if (def.needsGpu && specs.gpuTflops <= 0) return 'Needs a GPU';
   if (def.needsFastDisk && specs.diskType === 'hdd') return 'Needs an SSD or NVMe disk';
   const use = roleUse([...d.roles.map((r) => r.role), role]);

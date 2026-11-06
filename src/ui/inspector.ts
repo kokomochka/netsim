@@ -9,7 +9,7 @@
 import {
   ACCESS, AC_COOLING_KW, CABLE_BANDWIDTH, CELL, MEDIA_SWAP_PRICE, OVERHEAT_C, CPU_PARTS, DISK_PARTS, DISK_TYPES, GPU_PARTS, NIC_PARTS, RAM_PARTS, MON_AGENT_PORT, ROLES, SNMP_PORT, TICKS_PER_SEC, UPLINK_TIER,
   CERT_BONUS, CERT_PRICE, CERT_UPKEEP, CHASSIS, DEVICE_WATTS, PSU2_PRICE, RAID, SHUTDOWN_C, TEMP_CAP_RANGE, THROTTLE_C,
-  type PartGate, LEASED_LINE } from '../balance';
+  type PartGate, LEASED_LINE, MULTI_ROLES } from '../balance';
 import { GATE_NAME, gateOpen, partsProblem, peakWatts, roleBlocker, roleUse, serverCaps, swapCost } from '../state/hardware';
 import { compName, OFF_LABEL, serverDown, serverPower, wattsOf } from '../sim/hw';
 import { isMonitored, knownProblems } from '../sim/monitor';
@@ -18,7 +18,7 @@ import { buildCtx } from '../sim/net';
 import { heatOf, roomTemp } from '../sim/climate';
 import { ACHIEVEMENTS } from '../progress';
 import {
-  backupOk, chain, deviceCapacity, endpointsOf, serviceProblem, towerPenalty, towerRevenue, failoverReady, FAULT_LABEL, isVulnerable, orderReimage, orderUpdate, priceOf, repairOptions,
+  backupOk, chain, visitorPort, deviceCapacity, endpointsOf, serviceProblem, towerPenalty, towerRevenue, failoverReady, FAULT_LABEL, isVulnerable, orderReimage, orderUpdate, priceOf, repairOptions,
   serviceRevenue, startRepair, upkeepOf, compCost, hotSwap, latencyFactor, orderInspect, orderSwap,
 } from '../sim/engine';
 import { REASON_LABEL } from '../sim/net';
@@ -26,7 +26,7 @@ import { DEVICE_DEFS } from '../state/devices';
 import { portSide, portUsage } from '../state/geometry';
 import { addrText, formatCidr, parseAddr, parseCidr, subnetOf } from '../state/ip';
 import {
-  assertNever, type Cable, type CableType, type Device, type DeviceOf, type FirewallDevice, type FwAction,
+  assertNever, type ServerRole, type Cable, type CableType, type Device, type DeviceOf, type FirewallDevice, type FwAction,
   type DiskType, type FwProtocol, type Media, type PartSlot, type RaidLevel, type ServerParts, type ResolvedPath, type RoleKind, type RouterDevice, type Unlocks, type WorldState,
 } from '../state/types';
 import {
@@ -35,7 +35,7 @@ import {
 } from '../state/validate';
 import {
   addRole, allFqdns, buyBiggerBlock, moveToFloor, nextBlockUpgrade, editRole, setRoleLinks, setPortMedia, setServiceFqdn, buyPart, deleteCable, deleteDevice, editDevice, genId, publicIps, removeRole, rotateDevice, runtime,
-  select, setCableType, setServicePublicIp, setUplinkTier, toast, ui, world, cancelUpgrade, onBench, pendingParts, setCert, leaseLine } from '../state/world';
+  select, setCableType, setServicePublicIp, setUplinkTier, toast, ui, world, cancelUpgrade, onBench, pendingParts, setCert, leaseLine, setRolePort, roleKey } from '../state/world';
 import { cableGlyph, kindCss, kindGlyph } from './glyphs';
 import { baseStyle } from './styles';
 import { buildingAt, levelOf } from '../state/city';
@@ -819,17 +819,24 @@ export class NsInspector extends HTMLElement {
       const card = el('div', 'card');
       const top = el('div', 'row');
       top.style.gridTemplateColumns = 'minmax(0,1fr) auto';
+      top.style.gridTemplateColumns = 'minmax(0,1fr) 92px auto';
       const t = el('div');
-      t.innerHTML = `<b>${def.label}</b> <span class="sub">${def.proto}/${def.port}</span>`;
+      const same = d.roles.filter((x) => x.role === r.role);
+      t.innerHTML = `<b>${def.label}${same.length > 1 ? ` ${same.indexOf(r) + 1}` : ''}</b> <span class="sub">${def.proto}</span>`;
       top.appendChild(t);
-      top.appendChild(btn('Remove', () => removeRole(d.id, r.role), 'danger', `Remove ${def.label}`));
+      if (def.ports) top.appendChild(el('span', 'sub', def.ports.join(' / ')));
+      else top.appendChild(makeInput(`role-${roleKey(r)}-port`, String(r.port), {
+        placeholder: String(def.port), ariaLabel: `${def.label} port`,
+        onCommit: (v) => { const e = setRolePort(d.id, roleKey(r), Number(v.trim())); if (e) { toast(e, 'error'); this.schedule(); } },
+      }));
+      top.appendChild(btn('Remove', () => removeRole(d.id, roleKey(r)), 'danger', `Remove ${def.label}`));
       card.appendChild(top);
-      if (def.linksTo) card.appendChild(this.linkEditor(s, d, r.role));
+      if (def.linksTo) card.appendChild(this.linkEditor(s, d, r));
       const ex = this.roleExtras(s, d, r.role);
       if (ex) card.appendChild(ex);
       const svc = r.serviceId ? s.services[r.serviceId] : undefined;
       if (svc) {
-        card.appendChild(el('p', 'sub', `Listens on ${ROLES[r.role].proto}/${svc.port} on every interface of this server and answers back to whoever asked. Where visitors find it is set by its domain name, or under Public IPs in the Internet tab.`));
+        card.appendChild(el('p', 'sub', `Listens on ${ROLES[r.role].proto}/${svc.port}${svc.port === 80 && svc.kind !== 'dns' ? ' (and 443 with a certificate)' : ''} on every interface of this server. Visitors find it by its domain name${svc.port !== 80 && svc.kind !== 'dns' ? ` and port, like name:${svc.port}` : ''}, or under Public IPs in the Internet tab.`));
         const names = allFqdns(s);
         const fd = el('label', 'field');
         fd.appendChild(el('span', undefined, 'Domain name'));
@@ -839,7 +846,8 @@ export class NsInspector extends HTMLElement {
           const v = world.get().services[svc.id];
           if (!v) return '';
           const eps = endpointsOf(world.get(), runtime, v);
-          return eps.length ? `Visitors arrive on ${eps.join(', ')}${eps.length > 1 ? ' (shared, health-checked)' : ''}` : 'No public IP points here yet';
+          const vp = visitorPort(world.get(), v);
+          return eps.length ? `Visitors arrive on ${eps.map((e) => `${e}:${vp}`).join(', ')}${eps.length > 1 ? ' (shared, health-checked)' : ''}` : 'No public IP points here yet';
         }, 'sub'));
         card.appendChild(this.liveText(() => {
           const v = world.get().services[svc.id];
@@ -865,7 +873,7 @@ export class NsInspector extends HTMLElement {
           const ok = !!p && !p.blocked && !!p.ret && !p.ret.blocked;
           const prob = v ? serviceProblem(world.get(), runtime, v) : null;
           if (prob && (ok || !p)) return el('div', 'explain bad', prob);
-          if (ok && v?.fqdn) return el('div', 'explain ok', `Visitors find it as ${v.fqdn} (${runtime.resolve[v.id]?.ip}), about 40 % more of them than by bare IP.`);
+          if (ok && v?.fqdn) { const vp = visitorPort(world.get(), v); return el('div', 'explain ok', `Visitors find it as ${v.fqdn}${vp !== 80 && vp !== 443 ? `:${vp}` : ''} (${runtime.resolve[v.id]?.ip}), about 40 % more of them than by bare IP.`); }
           return el('div', `explain ${ok ? 'ok' : 'bad'}`, ok ? 'Reachable from the internet, replies get back.' : (p?.explain ?? 'Waiting…'));
         }));
       } else {
@@ -876,7 +884,7 @@ export class NsInspector extends HTMLElement {
     // add a role
     const addRow = el('div', 'row');
     addRow.style.gridTemplateColumns = 'minmax(0,1fr) minmax(0,0.8fr) auto';
-    const avail = (Object.keys(ROLES) as RoleKind[]).filter((k) => !d.roles.some((r) => r.role === k));
+    const avail = (Object.keys(ROLES) as RoleKind[]).filter((k) => MULTI_ROLES.has(k) || !d.roles.some((r) => r.role === k));
     if (avail.length) {
       const roleSel = makeSelect('role-add', avail.map((k) => ({ value: k, label: `${ROLES[k].label}${roleBlocker(d, k) ? ' ✕' : ''}` })), this.roleChoice ?? avail[0]!, 'Role to add', (v) => { this.roleChoice = v as RoleKind; this.schedule(); });
       const choice = (avail.includes(this.roleChoice as RoleKind) ? this.roleChoice : avail[0]) as RoleKind;
@@ -1220,9 +1228,10 @@ export class NsInspector extends HTMLElement {
   }
 
   /** Pick the back-end servers a role talks to, with live reachability. */
-  private linkEditor(s: WorldState, d: DeviceOf<'server'>, role: RoleKind): HTMLElement {
+  private linkEditor(s: WorldState, d: DeviceOf<'server'>, r: ServerRole): HTMLElement {
+    const role = r.role;
+    const key = roleKey(r);
     const def = ROLES[role];
-    const r = d.roles.find((x) => x.role === role)!;
     const box = el('div');
     box.style.display = 'grid';
     box.style.gap = '4px';
@@ -1236,16 +1245,16 @@ export class NsInspector extends HTMLElement {
     if (def.multiLink) {
       for (const c of cands) {
         box.appendChild(makeCheck(`link-${role}-${c.id}`, ` ${c.id === d.id ? 'this server' : c.name}${c.kind === 'server' && role === 'orchestrator' ? ` · ${c.specs.gpuTflops} TFLOPS` : ''}`, r.links.includes(c.id),
-          (v) => setRoleLinks(d.id, role, v ? [...r.links, c.id] : r.links.filter((x) => x !== c.id))));
+          (v) => setRoleLinks(d.id, key, v ? [...r.links, c.id] : r.links.filter((x) => x !== c.id))));
       }
     } else {
       const f = el('label', 'field');
       f.appendChild(el('span', undefined, 'Back end'));
-      f.appendChild(makeSelect(`link-${role}`, [{ value: '', label: 'choose…' }, ...cands.map((c) => ({ value: c.id, label: c.id === d.id ? 'this server' : `${c.name} (${c.extra[0]?.ip || c.ip || 'no IP'})` }))], r.links[0] ?? '', `${def.label} back end`, (v) => setRoleLinks(d.id, role, v ? [v] : [])));
+      f.appendChild(makeSelect(`link-${role}`, [{ value: '', label: 'choose…' }, ...cands.map((c) => ({ value: c.id, label: c.id === d.id ? 'this server' : `${c.name} (${c.extra[0]?.ip || c.ip || 'no IP'})` }))], r.links[0] ?? '', `${def.label} back end`, (v) => setRoleLinks(d.id, key, v ? [v] : [])));
       box.appendChild(f);
     }
     box.appendChild(this.liveBlock(() => {
-      const st = runtime.roleLinks[`${d.id}:${role}`];
+      const st = runtime.roleLinks[`${d.id}:${key}`];
       const out = el('div', 'derived');
       if (!r.links.length) { out.appendChild(el('span', 'warn-t', 'Not linked yet.')); return out; }
       for (const id of st?.ok ?? []) out.appendChild(el('span', 'ok-t', `✓ ${id === d.id ? 'this server (local)' : world.get().devices[id]?.name ?? id}`));

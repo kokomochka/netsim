@@ -205,6 +205,8 @@ export interface RoleDef {
   linksTo?: RoleKind[];          // back-end roles it must reach
   multiLink?: boolean;           // may use several back ends at once
 }
+/** Roles a server can run several of, each on its own port: more websites, more storage front ends, more APIs. */
+export const MULTI_ROLES = new Set<RoleKind>(['web', 'cloud', 'ai_frontend']);
 export const ROLES: Record<RoleKind, RoleDef> = {
   web:          { label: 'Website', blurb: 'A website. Plain HTTP on port 80, HTTPS on 443 once the server has a certificate. Brings in about $0.40/s and 20 Mbps of visitors.', port: 80, proto: 'tcp', cores: 1, ramGB: 1, diskGB: 10, public: true, service: 'web', stateful: false },
   cloud:        { label: 'Cloud storage', blurb: 'Customers keep their files here and pay by the gigabyte. Port 80, or 443 with a certificate. The files themselves live on a NAS or SAN you link it to.', port: 80, proto: 'tcp', cores: 2, ramGB: 4, diskGB: 20, public: true, service: 'cloud', stateful: false, linksTo: ['nas', 'san'] },

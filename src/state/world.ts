@@ -1,7 +1,7 @@
 // The two stores (saved world + transient UI) and every world mutation. Phase 2.
 import { random, seeded } from '../rng';
 import { STRIDE, buildingAt, generateCity, inRects, levelOf, localY } from './city';
-import { CERT_PRICE, CHASSIS, ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TLDS, MAX_DISKS, MAX_SERVER_PORTS, MEDIA_SWAP_PRICE, OUTSIDE_TEMP, ENGINEER_HIRE, ROLES, START_BALANCE, TILE_PRICE, UPLINK_TIER, UPTIME_BUCKETS, PLAYER_BLOCK_OCTETS, PUBLIC_BLOCK_UPGRADES, UPLINK_START, MAP_W, MAP_H, MULTIFLOOR_SWITCH_PRICE, ENGINEER_SALARY, LEASED_LINE, FAR_PLACES } from '../balance';
+import { CERT_PRICE, CHASSIS, ACCESS, CABLE_BANDWIDTH, CABLE_PRICE, TLDS, MAX_DISKS, MAX_SERVER_PORTS, MEDIA_SWAP_PRICE, OUTSIDE_TEMP, ENGINEER_HIRE, ROLES, START_BALANCE, TILE_PRICE, UPLINK_TIER, UPTIME_BUCKETS, PLAYER_BLOCK_OCTETS, PUBLIC_BLOCK_UPGRADES, UPLINK_START, MAP_W, MAP_H, MULTIFLOOR_SWITCH_PRICE, ENGINEER_SALARY, LEASED_LINE, FAR_PLACES, MULTI_ROLES, MGMT_PORT, MON_AGENT_PORT } from '../balance';
 import { freshAchievements } from '../progress';
 import { DEVICE_DEFS, SERVER_PORT_LAYOUT, defOf } from './devices';
 import { inMap, inParking, isIndoor, placementError, starterFloor, tileAt } from './floor';
@@ -12,7 +12,7 @@ import { createStore } from './store';
 import type {
   Cable, CableEnd, CableId, CableType, Device, DeviceId, DeviceKind,
   AccessKind, DiskType, RaidLevel, Domain, Economy, Engineer, Media, ServerRole, GridPos, PartSlot, RoleKind, Rotation, RuntimeCache, ServerParts, Staff, Stats, Tile,
-  Unlocks, UplinkTier, WorldState, Trait } from './types';
+  Unlocks, UplinkTier, WorldState, Trait, ServerDevice } from './types';
 import { formatIp, parseCidr, parseIp } from './ip';
 
 export const SCHEMA_VERSION = 13;
@@ -172,7 +172,7 @@ export const onToast = (fn: ToastFn) => { toastListeners.add(fn); return () => t
 export const toast = (msg: string, kind: ToastKind = 'info') => toastListeners.forEach((fn) => fn(msg, kind));
 
 // ---------- helpers ----------
-function nextId(s: WorldState, prefix: 'dev' | 'cab' | 'rt' | 'fw' | 'flw' | 'svc' | 'inc' | 'rl' | 'nat' | 'uf' | 'dom' | 'rec' | 'rule' | 'pip' | 'mt' | 'pat' | 'si' | 'vpn'): string {
+function nextId(s: WorldState, prefix: 'dev' | 'cab' | 'rt' | 'fw' | 'flw' | 'svc' | 'inc' | 'rl' | 'nat' | 'uf' | 'dom' | 'rec' | 'rule' | 'pip' | 'mt' | 'pat' | 'si' | 'vpn' | 'role'): string {
   return `${prefix}_${s.nextId++}`;
 }
 
@@ -619,8 +619,10 @@ export function addRole(serverId: DeviceId, role: RoleKind, publicIp = ''): stri
         downSinceTick: null, downPenalised: false, upTicks: 0, flowId: null,
       };
     }
+    const port = freeRolePort(x, role);
+    if (sid) w.services[sid]!.port = port;
     x.roles.push({
-      role, serviceId: sid, port: def.port, links: [],
+      id: nextId(w, 'role'), role, serviceId: sid, port, links: [],
       ...(role === 'proxy' ? { rules: [] } : role === 'dns_local' ? { records: [] } : role === 'mirror' ? { upstream: 'direct' as const } : {}),
     });
     // a back end added to a server that already has the front end links up locally
@@ -636,28 +638,77 @@ export function addRole(serverId: DeviceId, role: RoleKind, publicIp = ''): stri
 }
 
 /** Point a role at its back-end servers. */
-export function setRoleLinks(serverId: DeviceId, role: RoleKind, links: DeviceId[]): void {
+/** A role by its id, or by its kind for roles a server runs only once. */
+export function findRole(x: ServerDevice, key: string): ServerRole | undefined {
+  return x.roles.find((r) => r.id === key) ?? x.roles.find((r) => r.role === key);
+}
+export const roleKey = (r: ServerRole) => r.id ?? r.role;
+
+/** Ports a server already answers on for this protocol, apart from one role. */
+function takenPorts(x: ServerDevice, proto: 'tcp' | 'udp', except?: ServerRole): Set<number> {
+  const out = new Set<number>(proto === 'tcp' ? [MGMT_PORT, MON_AGENT_PORT] : []);
+  for (const r of x.roles) {
+    if (r === except || ROLES[r.role].proto !== proto) continue;
+    for (const p of ROLES[r.role].ports ?? [r.port]) out.add(p);
+    if (MULTI_ROLES.has(r.role) && r.port === 80) out.add(443);   // HTTPS on 443 once there's a certificate
+  }
+  return out;
+}
+
+/** The role's usual port, or the next free one: a second website goes on 8080, then 8081… */
+function freeRolePort(x: ServerDevice, role: RoleKind): number {
+  const def = ROLES[role];
+  const taken = takenPorts(x, def.proto);
+  if (!taken.has(def.port)) return def.port;
+  for (let p = def.port === 80 ? 8080 : def.port + 1; p < 65536; p++) if (!taken.has(p)) return p;
+  return def.port;
+}
+
+/** Move a role to another port. Whoever uses it has to come to the new one. */
+export function setRolePort(serverId: DeviceId, key: string, port: number): string | null {
+  const s = world.get();
+  const x = s.devices[serverId];
+  if (x?.kind !== 'server') return 'Not a server';
+  const r = findRole(x, key);
+  if (!r) return 'No such role';
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return 'A port is a number from 1 to 65535';
+  const def = ROLES[r.role];
+  if (def.ports) return `${def.label} answers on ${def.ports.join(' and ')}; that can't be changed`;
+  if (takenPorts(x, def.proto, r).has(port)) return `${x.name} already answers on ${def.proto}/${port}`;
+  world.update((w) => {
+    const y = w.devices[serverId];
+    if (y?.kind !== 'server') return;
+    const q = findRole(y, key);
+    if (!q) return;
+    q.port = port;
+    if (q.serviceId && w.services[q.serviceId]) w.services[q.serviceId]!.port = port;
+    runtime.topologyDirty = true;
+  });
+  return null;
+}
+
+export function setRoleLinks(serverId: DeviceId, role: string, links: DeviceId[]): void {
   world.update((w) => {
     const x = w.devices[serverId];
     if (x?.kind !== 'server') return;
-    const r = x.roles.find((y) => y.role === role);
+    const r = findRole(x, role);
     if (r) r.links = [...new Set(links)];
     runtime.topologyDirty = true;
   });
 }
 
-export function removeRole(serverId: DeviceId, role: RoleKind): void {
+export function removeRole(serverId: DeviceId, role: string): void {
   world.update((w) => {
     const x = w.devices[serverId];
     if (x?.kind !== 'server') return;
-    const r = x.roles.find((y) => y.role === role);
+    const r = findRole(x, role);
     if (r?.serviceId) {
       for (const a of Object.values(w.publicAddrs)) a.services = a.services.filter((y) => y !== r.serviceId);
       const v = w.services[r.serviceId];
       if (v?.flowId) delete w.flows[v.flowId];
       delete w.services[r.serviceId];
     }
-    x.roles = x.roles.filter((y) => y.role !== role);
+    x.roles = x.roles.filter((y) => y !== r);
     runtime.topologyDirty = true;
   });
 }
@@ -918,10 +969,10 @@ export function allFqdns(s: WorldState): string[] {
 }
 
 /** Change role settings (proxy rules, local DNS records, mirror upstream). */
-export function editRole(serverId: DeviceId, role: RoleKind, fn: (r: ServerRole) => void): void {
+export function editRole(serverId: DeviceId, role: string, fn: (r: ServerRole) => void): void {
   world.update((w) => {
     const x = w.devices[serverId];
-    const r = x?.kind === 'server' ? x.roles.find((y) => y.role === role) : undefined;
+    const r = x?.kind === 'server' ? findRole(x, role) : undefined;
     if (r) fn(r);
     runtime.topologyDirty = true;
   });
