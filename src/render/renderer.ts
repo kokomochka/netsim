@@ -776,7 +776,7 @@ export class Renderer {
   // Dashes slide along each cable in the direction traffic moves. They are
   // animated every frame in real time (not per sim tick), so they stay smooth
   // at 4×: speed only nudges the pace. Width follows volume, colour the kind.
-  private streams: { pts: Vec2[]; mbps: number; color: number; attack: boolean }[] = [];
+  private streams: { pts: Vec2[]; mbps: number; color: number; attack: boolean; pattern: number[] }[] = [];
   private blocks: Vec2[] = [];
   private streamPhase = 0;
   private lastFrame = 0;
@@ -819,19 +819,19 @@ export class Renderer {
       const other = e.cable.a.deviceId === e.from ? e.cable.b.deviceId : e.cable.a.deviceId;
       if (agg.has(`${e.cable.id}>${other}`)) both.add(e.cable.id);
     }
-    // and each kind of traffic gets its own lane, so a reverse proxy's legs to its back ends,
-    // backups or control traffic show up next to the visitors instead of being swallowed by them
+    // one stream per direction, its dashes shared out between the kinds of traffic by their share:
+    // half visitors and half SSH makes every other dash green
     const ORDER: FlowKind[] = ['http', 'transit', 'proxied', 'backend', 'backup', 'control', 'probe', 'attack'];
     for (const e of agg.values()) {
       const kinds = [...e.byKind.entries()].filter(([, v]) => v > 0.05)
         .sort((x, y) => ORDER.indexOf(x[0]) - ORDER.indexOf(y[0]));
+      if (!kinds.length) continue;
       const shown = this.cableDisplay.get(e.cable.id) ?? e.cable.path;
-      const base = e.cable.a.deviceId === e.from ? shown : [...shown].reverse();
-      kinds.forEach(([kind, mbps], i) => {
-        const off = (both.has(e.cable.id) ? 2.2 : 0) + i * 3.4;
-        const pts = off ? offsetPath(base, off) : base;
-        this.streams.push({ pts, mbps, color: this.kindColor(kind), attack: kind === 'attack' });
-      });
+      let pts = e.cable.a.deviceId === e.from ? shown : [...shown].reverse();
+      if (both.has(e.cable.id)) pts = offsetPath(pts, 2.2);
+      const pattern = dashPattern(kinds.map(([k, v]) => ({ color: this.kindColor(k), share: v / e.mbps })));
+      const attack = (e.byKind.get('attack') ?? 0) > e.mbps * 0.3;
+      this.streams.push({ pts, mbps: e.mbps, color: pattern[0]!, attack, pattern });
     }
     this.blocks = blocks;
   }
@@ -853,25 +853,29 @@ export class Renderer {
     const DASH = 4.5, PERIOD = 22;
     for (const st of this.streams) {
       const w = Math.min(3.6, 1.5 + Math.log2(1 + st.mbps) * 0.26);
-      const phase = (this.streamPhase * (st.attack ? 1.6 : 1)) % PERIOD;
-      let walked = 0;
-      for (let i = 0; i < st.pts.length - 1; i++) {
-        const a = st.pts[i]!, b = st.pts[i + 1]!;
-        const len = Math.hypot(b.x - a.x, b.y - a.y);
-        if (len < 0.01) continue;
-        const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
-        // dash k covers [k*PERIOD + phase, +DASH] in path distance
-        let k = Math.floor((walked - phase) / PERIOD);
-        for (;;) {
-          const d0 = k * PERIOD + phase - walked, d1 = d0 + DASH;
-          if (d0 >= len) break;
-          const t0 = Math.max(0, d0), t1 = Math.min(len, d1);
-          if (t1 > t0) cg.moveTo(a.x + ux * t0, a.y + uy * t0).lineTo(a.x + ux * t1, a.y + uy * t1);
-          k++;
+      // the phase is not wrapped, so each dash keeps its number (and colour) as it travels
+      const phase = this.streamPhase * (st.attack ? 1.6 : 1);
+      const n = st.pattern.length;
+      for (const color of new Set(st.pattern)) {
+        let walked = 0;
+        for (let i = 0; i < st.pts.length - 1; i++) {
+          const a = st.pts[i]!, b = st.pts[i + 1]!;
+          const len = Math.hypot(b.x - a.x, b.y - a.y);
+          if (len < 0.01) continue;
+          const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+          // dash k covers [k*PERIOD + phase, +DASH] in path distance
+          let k = Math.floor((walked - phase) / PERIOD);
+          for (;;) {
+            const d0 = k * PERIOD + phase - walked, d1 = d0 + DASH;
+            if (d0 >= len) break;
+            const t0 = Math.max(0, d0), t1 = Math.min(len, d1);
+            if (t1 > t0 && st.pattern[((k % n) + n) % n] === color) cg.moveTo(a.x + ux * t0, a.y + uy * t0).lineTo(a.x + ux * t1, a.y + uy * t1);
+            k++;
+          }
+          walked += len;
         }
-        walked += len;
+        cg.stroke({ width: w, color, alpha: 0.9, cap: 'round' });
       }
-      cg.stroke({ width: w, color: st.color, alpha: 0.9, cap: 'round' });
     }
     if (this.blocks.length) {
       const pulse = (now % 900) / 900;
@@ -978,4 +982,27 @@ function portReady(d: Device, i: number): boolean {
       return d.interfaces.some((f) => f.port === i && !!f.ip.trim()) || (d.subifs ?? []).some((f) => f.port === i && !!f.ip.trim());
     default: return true;
   }
+}
+
+/** A repeating run of dash colours where each colour gets its share of the dashes, spread out evenly. */
+function dashPattern(mix: { color: number; share: number }[]): number[] {
+  if (mix.length === 1) return [mix[0]!.color];
+  const N = 12;
+  const out: number[] = [];
+  const given = mix.map(() => 0);
+  for (let j = 0; j < N; j++) {
+    // whichever kind is furthest behind its share takes the next dash
+    let best = 0, gap = -Infinity;
+    mix.forEach((m, i) => { const g = m.share * (j + 1) - given[i]!; if (g > gap) { gap = g; best = i; } });
+    given[best]!++;
+    out.push(mix[best]!.color);
+  }
+  // a trickle still shows: every kind gets at least one dash, taken from the biggest
+  mix.forEach((m, i) => {
+    if (given[i]! > 0) return;
+    const big = given.indexOf(Math.max(...given));
+    const at = out.lastIndexOf(mix[big]!.color);
+    out[at] = m.color; given[big]!--; given[i] = 1;
+  });
+  return out;
 }

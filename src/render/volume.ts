@@ -185,11 +185,12 @@ export function drawModel(g: Graphics, d: Device, cx: number, cy: number, failed
       return { hull: hullOf(x0, y0, x1, y1, H), led: [0, 1, 2, 3].map((i) => ({ x: x1 - 4 - i * 4, y: y0 - H + 4 })) };
     }
     case 'router': {
-      // a squat box with two antennas
+      // a squat blue box with a row of ports on its face
       const x0 = cx - 15, x1 = cx + 15, y0 = cy - 11, y1 = cy + 11;
       box(g, x0, y0, x1, y1, H, dim(0x2f6f9e), dim(0x1f4d70));
-      for (const ax of [x0 + 5, x1 - 5]) { g.rect(ax - 1.2, y0 - H - 18, 2.4, 18).fill({ color: 0x1b1f24 }); g.circle(ax, y0 - H - 18, 2).fill({ color: 0x1b1f24 }); }
-      return { hull: hullOf(x0, y0 - 18, x1, y1, H), led: [0, 1, 2].map((i) => ({ x: x0 + 6 + i * 5, y: y1 - H / 2 })) };
+      for (let k = 0; k < 4; k++) g.rect(x1 - 6 - k * 5, y1 - H + 3, 3.5, H - 5).fill({ color: 0x14324a });
+      g.rect(x0 + 4, y0 - H + 4, 10, 2).fill({ color: 0x8fb8d8 });
+      return { hull: hullOf(x0, y0, x1, y1, H), led: [0, 1, 2].map((i) => ({ x: x0 + 5 + i * 4, y: y1 - H / 2 })) };
     }
     case 'firewall': {
       // a red appliance with a brick face
