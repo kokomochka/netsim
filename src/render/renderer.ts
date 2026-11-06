@@ -621,17 +621,19 @@ export class Renderer {
         const pos = this.portSpot(d, port.index);
         const cableId = used.get(`${d.id}:${port.index}`);
         const c = cableId ? s.cables[cableId] : undefined;
+        // red: no cable; yellow: a cable, but an end isn't set up; green: set up, or traffic already flows
+        let state: 'none' | 'cable' | 'ok' = 'none';
         if (c) {
-          const col = CABLE_COLOR[c.type];
-          pg.moveTo(floor.x, floor.y).lineTo(pos.x, pos.y).stroke({ width: 3, color: col });
-          pg.circle(pos.x, pos.y, d.ports.length > 4 ? 3.8 : 4.5).fill({ color: col }).stroke({ width: 1.5, color: 0x1d232b });
-        } else {
-          const crowd = d.ports.length > 4;
-          const r = focusDev ? (crowd ? 4.5 : 5.5) : cableMode ? (crowd ? 3.8 : 4.5) : 3.5;
-          pg.circle(pos.x, pos.y, r).fill({ color: 0x1d232b }).stroke({ width: 1.8, color: cableMode ? 0xffffff : 0xc9d1da });
+          const other = c.a.deviceId === d.id && c.a.port === port.index ? c.b : c.a;
+          const od = s.devices[other.deviceId];
+          state = (runtime.cableLoad[c.id] ?? 0) > 0.01 || (portReady(d, port.index) && !!od && portReady(od, other.port)) ? 'ok' : 'cable';
+          pg.moveTo(floor.x, floor.y).lineTo(pos.x, pos.y).stroke({ width: 2, color: CABLE_COLOR[c.type], alpha: 0.9 });
         }
+        const col = state === 'ok' ? 0x2fbf71 : state === 'cable' ? 0xf2b630 : 0xe5484d;
+        const r = focusDev ? 3.6 : cableMode ? 3 : 2.4;
+        pg.circle(pos.x, pos.y, r).fill({ color: col, alpha: cableMode || state !== 'none' ? 0.95 : 0.55 }).stroke({ width: 1, color: 0x1d232b, alpha: 0.6 });
         if (tipPort === port.index && hoverDev?.id === d.id) {
-          pg.circle(pos.x, pos.y, 9).stroke({ width: 2.5, color: c ? COLORS.healthBad : COLORS.hover });
+          pg.circle(pos.x, pos.y, 6.5).stroke({ width: 2, color: c ? COLORS.healthBad : COLORS.hover });
         }
       }
     }
@@ -874,8 +876,12 @@ export class Renderer {
   }
 
   /** Redraw health badges and sim-driven layers — called every sim tick. */
+  private lastPortDraw = 0;
   private redrawSim(): void {
     const s = world.get();
+    // port lights follow live traffic: refresh them now and then
+    const t = performance.now();
+    if (t - this.lastPortDraw > 700) { this.lastPortDraw = t; this.redrawInteractive(); }
     const cg = this.carriers;
     cg.clear();
 
@@ -955,4 +961,15 @@ function hash(x: number, y: number): number {
   let h = (x * 374761393 + y * 668265263) | 0;
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   return (h ^ (h >>> 16)) >>> 0;
+}
+
+/** Is this port's end of a link set up: an address on it where the device needs one? */
+function portReady(d: Device, i: number): boolean {
+  switch (d.kind) {
+    case 'server': return i === 0 ? d.addressing === 'dhcp' || !!d.ip.trim() : !!d.extra[i - 1]?.ip.trim();
+    case 'desk': case 'tower': return d.addressing === 'dhcp' || !!d.ip.trim();
+    case 'router': case 'firewall':
+      return d.interfaces.some((f) => f.port === i && !!f.ip.trim()) || (d.subifs ?? []).some((f) => f.port === i && !!f.ip.trim());
+    default: return true;
+  }
 }

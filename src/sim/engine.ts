@@ -429,7 +429,9 @@ function economy(state: WorldState): void {
   state.economy.balance += (rev - upkeep) / TICKS_PER_SEC;
   state.economy.totalEarned += rev / TICKS_PER_SEC;
   state.economy.totalSpent += upkeep / TICKS_PER_SEC;
-  state.economy.revenuePerSec = rev;
+  // clients' deals pay in deals.ts; count them here too so Net / s tells the truth
+  const deals = Object.values(state.deals?.contracts ?? {}).reduce((a, c) => a + (c.state === 'live' && c.downS === 0 ? c.rate : 0), 0);
+  state.economy.revenuePerSec = rev + deals;
   state.economy.upkeepPerSec = upkeep;
 }
 
